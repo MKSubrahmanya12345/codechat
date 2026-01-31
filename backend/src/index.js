@@ -4,6 +4,9 @@ import cors from "cors";
 import cookieParser from "cookie-parser";
 import { connectDB } from "./lib/db.js"; // We'll make this helper
 import authRoutes from "./routes/auth.route.js";
+import repoRoutes from "./routes/repo.route.js";
+
+
 
 dotenv.config();
 
@@ -17,6 +20,7 @@ app.use(cors({
 }));
 
 app.use("/api/auth", authRoutes);
+app.use("/api/repos", repoRoutes);
 
 app.listen(process.env.PORT, () => {
     console.log(`Server running on port ${process.env.PORT}`);

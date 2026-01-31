@@ -3,6 +3,7 @@ import jwt from "jsonwebtoken";
 import { User } from "../models/user.model.js";
 
 export const githubLogin = (req, res) => {
+    // We use process.env.BASE_URL to avoid hardcoding localhost issues
     const redirectUrl = `${process.env.BASE_URL}/api/auth/github/callback`;
     const url = `https://github.com/login/oauth/authorize?client_id=${process.env.GITHUB_CLIENT_ID}&redirect_uri=${redirectUrl}&scope=read:user user:email`;
     res.redirect(url);
@@ -28,29 +29,31 @@ export const githubCallback = async (req, res) => {
 
         const { id, login, avatar_url, email } = userRes.data;
 
-        // 3. Find or Create User
-        let user = await User.findOne({ githubId: id.toString() });
-
-        if (!user) {
-            user = await User.create({
-                githubId: id.toString(),
+        // 3. Find or Create User (With Token Saving)
+        // We use findOneAndUpdate to ensure the token is always fresh and updated on every login
+        let user = await User.findOneAndUpdate(
+            { githubId: id.toString() },
+            {
                 username: login,
                 avatarUrl: avatar_url,
-                email: email
-            });
-        }
+                email: email,
+                githubToken: accessToken // <--- CRITICAL: Saving the token here
+            },
+            { new: true, upsert: true } // "upsert: true" creates the user if they don't exist
+        );
 
         // 4. Generate JWT
         const token = jwt.sign({ userId: user._id }, process.env.JWT_SECRET, { expiresIn: "7d" });
 
         // 5. Set Cookie
         res.cookie("jwt", token, {
-            maxAge: 7 * 24 * 60 * 60 * 1000,
+            maxAge: 7 * 24 * 60 * 60 * 1000, // 7 days
             httpOnly: true,
-            sameSite: "strict"
+            sameSite: "strict",
+            secure: process.env.NODE_ENV === "production" // HTTPS only in production
         });
 
-        // 6. Redirect to Frontend (We will build this next)
+        // 6. Redirect to Frontend
         res.redirect(process.env.CLIENT_URL); 
 
     } catch (error) {
