@@ -5,8 +5,15 @@ const userSchema = new mongoose.Schema({
     username: { type: String, required: true },
     email: { type: String },
     avatarUrl: { type: String },
-    // NEW FIELD: Store the access token here
-    githubToken: { type: String, required: true } 
+    githubToken: { type: String },
+    
+    // 👇 NEW: Store repos shared by others
+    sharedRepos: [{
+        repoId: String,
+        name: String,
+        owner: String,
+        description: String
+    }]
 }, { timestamps: true });
 
 export const User = mongoose.model("User", userSchema);

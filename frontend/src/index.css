@@ -19,24 +19,51 @@
   color: transparent;
 }
 
-body {
-  background-color: #030712; /* gray-950 equivalent */
-  color: white;
-  min-height: 100vh;
+
+:root {
+  --cursor-bg: #0C0C0C;
+  --cursor-card: #151515;
+  --cursor-border: #2A2A2A;
+  --cursor-accent: #37996B; /* Emerald-ish */
 }
 
-/* Custom utilities for the flashy UI */
-@layer utilities {
-  .glass {
-    @apply bg-gray-900/50 backdrop-blur-md border border-gray-800;
-  }
-  
-  .text-gradient {
-    @apply bg-gradient-to-r from-emerald-400 to-blue-500 bg-clip-text text-transparent;
-  }
+body {
+  background-color: var(--cursor-bg);
+  color: #EAEAEA;
+  font-family: 'Inter', system-ui, sans-serif;
+  overflow-x: hidden;
 }
 
-/* Set default dark theme for the whole app */
-body {
-    @apply bg-gray-950 text-white min-h-screen font-sans antialiased selection:bg-emerald-500/30;
+/* Scrollbar */
+::-webkit-scrollbar {
+  width: 8px;
+}
+::-webkit-scrollbar-track {
+  background: var(--cursor-bg);
+}
+::-webkit-scrollbar-thumb {
+  background: var(--cursor-border);
+  border-radius: 4px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: #444;
+}
+
+/* Utilities */
+.glass {
+  background: rgba(255, 255, 255, 0.03);
+  backdrop-filter: blur(10px);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.text-gradient {
+  background: linear-gradient(135deg, #fff 0%, #a5a5a5 100%);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+}
+
+.text-gradient-accent {
+  background: linear-gradient(135deg, #34D399 0%, #3B82F6 100%);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
 }

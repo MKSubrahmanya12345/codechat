@@ -3,7 +3,9 @@ import { User } from "../models/user.model.js";
 
 export const protectRoute = async (req, res, next) => {
     try {
-        const token = req.cookies.jwt;
+        // 👇 FIX: Check Header FIRST, then Cookie
+        // The previous code checked Cookie first, which caused it to use the stale token.
+        const token = req.headers.authorization?.split(" ")[1] || req.cookies.jwt;
 
         if (!token) {
             return res.status(401).json({ error: "Unauthorized: No Token Provided" });

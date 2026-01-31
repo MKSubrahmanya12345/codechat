@@ -4,26 +4,23 @@ import { useAuthStore } from "./store/authUser";
 import HomePage from "./pages/HomePage";
 import HeroPage from "./pages/HeroPage";
 import { Loader } from "lucide-react";
+import axios from "axios"; // 👈 IMPORT AXIOS
 
 function App() {
-    const {
-        authUser,
-        checkAuth,
-        isCheckingAuth,
-    } = useAuthStore();
+    const { authUser, checkAuth, isCheckingAuth } = useAuthStore();
 
-    // Initial auth check (normal web flow)
+    // 1. On Load: Check if we have a saved token and Attach it
     useEffect(() => {
         const jwt = localStorage.getItem("jwt");
-
         if (jwt) {
+            axios.defaults.headers.common['Authorization'] = `Bearer ${jwt}`; // 👈 CRITICAL FIX
             checkAuth();
         } else {
-            checkAuth(); // still check for cookie-based login
+            checkAuth(); 
         }
     }, [checkAuth]);
 
-    // Listen for token from VS Code extension
+    // 2. On Login Success: Receive token, Save it, Attach it
     useEffect(() => {
         const handleMessage = (event) => {
             if (event?.data?.command === "authSuccess") {
@@ -31,7 +28,8 @@ function App() {
                 if (!token) return;
 
                 localStorage.setItem("jwt", token);
-                checkAuth(); // re-validate user after token injection
+                axios.defaults.headers.common['Authorization'] = `Bearer ${token}`; // 👈 CRITICAL FIX
+                checkAuth(); 
             }
         };
 
@@ -49,14 +47,8 @@ function App() {
 
     return (
         <Routes>
-            <Route
-                path="/"
-                element={!authUser ? <HeroPage /> : <Navigate to="/home" />}
-            />
-            <Route
-                path="/home"
-                element={authUser ? <HomePage /> : <Navigate to="/" />}
-            />
+            <Route path="/" element={!authUser ? <HeroPage /> : <Navigate to="/home" />} />
+            <Route path="/home" element={authUser ? <HomePage /> : <Navigate to="/" />} />
         </Routes>
     );
 }
