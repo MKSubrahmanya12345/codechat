@@ -9,7 +9,7 @@ import fs from "fs";
 
 import { connectDB } from "./lib/db.js";
 import { Server } from "socket.io";
-import { Message } from "./models/message.model.js"; // 👈 CRITICAL IMPORT
+import { Message } from "./models/message.model.js";
 
 import authRoutes from "./routes/auth.route.js";
 import repoRoutes from "./routes/repo.route.js";
@@ -87,7 +87,7 @@ io.on("connection", (socket) => {
         }
     });
 
-    // 👇 FIXED: Message Actions (Delete/Edit/React)
+ 
     socket.on("messageAction", async ({ action, messageId, repoId, payload }) => {
         console.log(`Action Received: ${action} for msg ${messageId}`); // DEBUG LOG
 
