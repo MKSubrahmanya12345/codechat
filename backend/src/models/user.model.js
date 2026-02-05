@@ -1,8 +1,10 @@
 import mongoose from "mongoose";
 
 const userSchema = new mongoose.Schema({
-    githubId: { type: String, required: true, unique: true },
+    githubId: { type: String, unique: true, sparse: true },
     username: { type: String, required: true },
+    status: { type: String, enum: ["active", "shadow"], default: "active" },
+    repoBasePath: { type: String },
     email: { type: String },
     avatarUrl: { type: String },
     githubToken: { type: String },

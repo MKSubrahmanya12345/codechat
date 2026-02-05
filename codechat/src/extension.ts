@@ -24,6 +24,28 @@ export function activate(context: vscode.ExtensionContext) {
             }
         })
     );
+
+    context.subscriptions.push(
+        vscode.window.onDidChangeTextEditorSelection((event) => {
+            const editor = event.textEditor;
+            if (!editor || !editor.document) return;
+            const selection = editor.selection;
+            if (selection.isEmpty) return;
+
+            const text = editor.document.getText(selection);
+            const filePath = editor.document.uri.fsPath;
+            const lineStart = selection.start.line + 1;
+            const lineEnd = selection.end.line + 1;
+
+            provider.sendMessageToWebview({
+                command: "selectionChanged",
+                text,
+                filePath,
+                lineStart,
+                lineEnd
+            });
+        })
+    );
 }
 
 class ChatViewProvider implements vscode.WebviewViewProvider {
@@ -45,11 +67,27 @@ class ChatViewProvider implements vscode.WebviewViewProvider {
 
         webviewView.webview.html = this._getHtmlForWebview(webviewView.webview);
 
-        webviewView.webview.onDidReceiveMessage(message => {
+        webviewView.webview.onDidReceiveMessage(async message => {
             switch (message.command) {
                 case 'loginGithub':
                     vscode.env.openExternal(vscode.Uri.parse(message.url));
                     return;
+                case 'openFile': {
+                    if (!message.path) return;
+                    const doc = await vscode.workspace.openTextDocument(message.path);
+                    const editor = await vscode.window.showTextDocument(doc, {
+                        preview: false,
+                        viewColumn: vscode.ViewColumn.Beside
+                    });
+                    if (message.lineStart && message.lineEnd) {
+                        const start = new vscode.Position(message.lineStart - 1, 0);
+                        const end = new vscode.Position(message.lineEnd - 1, 0);
+                        const range = new vscode.Range(start, end);
+                        editor.selection = new vscode.Selection(start, end);
+                        editor.revealRange(range, vscode.TextEditorRevealType.InCenter);
+                    }
+                    return;
+                }
             }
         });
     }
@@ -58,6 +96,12 @@ class ChatViewProvider implements vscode.WebviewViewProvider {
     public sendTokenToWebview(token: string) {
         if (this._view) {
             this._view.webview.postMessage({ command: 'authSuccess', token: token });
+        }
+    }
+
+    public sendMessageToWebview(message: any) {
+        if (this._view) {
+            this._view.webview.postMessage(message);
         }
     }
 
@@ -84,16 +128,13 @@ class ChatViewProvider implements vscode.WebviewViewProvider {
                 // 1. Listen for Token from VS Code Extension
                 window.addEventListener('message', event => {
                     const message = event.data;
-                    if (message.command === 'authSuccess') {
-                        // Pass it down to the React App Iframe
-                        iframe.contentWindow.postMessage(message, '*');
-                    }
+                    iframe.contentWindow.postMessage(message, '*');
                 });
 
                 // 2. Listen for Login Request from React
                 window.addEventListener('message', event => {
                     const message = event.data;
-                    if (message.command === 'loginGithub') {
+                    if (message && message.command) {
                         vscode.postMessage(message);
                     }
                 });

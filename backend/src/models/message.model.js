@@ -6,7 +6,7 @@ const messageSchema = new mongoose.Schema({
     text: { type: String, required: true },
     
     // 👇 NEW: WhatsApp Features
-    type: { type: String, enum: ['text', 'image', 'system'], default: 'text' },
+    type: { type: String, enum: ['text', 'image', 'file', 'system'], default: 'text' },
     status: { type: String, enum: ['sent', 'delivered', 'read'], default: 'sent' },
     replyTo: { 
         id: { type: String },
@@ -18,7 +18,16 @@ const messageSchema = new mongoose.Schema({
         user: String
     }],
     isEdited: { type: Boolean, default: false },
-    readBy: [{ type: String }] // Array of usernames who read it
+    readBy: [{
+        username: String,
+        at: Date
+    }],
+    codeSelection: {
+        filePath: String,
+        lineStart: Number,
+        lineEnd: Number,
+        code: String
+    }
 }, { timestamps: true });
 
 export const Message = mongoose.model("Message", messageSchema);

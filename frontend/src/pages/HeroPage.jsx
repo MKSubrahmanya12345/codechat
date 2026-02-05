@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { Github, Terminal, Zap, Shield, Globe, Menu, X, ArrowRight } from "lucide-react";
+import { Github, Terminal, Zap, Shield, Globe, Menu, X, ArrowRight, UserPlus, Users, CheckCheck, Code2, Paperclip, Activity } from "lucide-react";
 
 const HeroPage = () => {
     const [isMenuOpen, setIsMenuOpen] = useState(false);
@@ -70,7 +70,7 @@ const HeroPage = () => {
                 {/* Badge */}
                 <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-white/5 border border-white/10 text-xs text-emerald-400 mb-8 animate-fade-in-up">
                     <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse"></span>
-                    v1.0 Now Available for VS Code
+                    v1.0 Web App Live
                 </div>
 
                 {/* Headline */}
@@ -81,8 +81,8 @@ const HeroPage = () => {
 
                 {/* Subtext */}
                 <p className="text-lg md:text-xl text-gray-500 max-w-2xl mb-10 leading-relaxed">
-                    The open-source chat extension that lives inside your editor. 
-                    Collaborate, debug, and ship faster without context switching.
+                    A GitHub-native team chat built for engineers. 
+                    Invite anyone instantly, see who is online, and keep code context right inside the conversation.
                 </p>
 
                 {/* CTA Buttons */}
@@ -126,23 +126,35 @@ const HeroPage = () => {
             <section id="features" className="py-24 border-t border-white/5 bg-[#0C0C0C]">
                 <div className="max-w-6xl mx-auto px-6">
                     <div className="grid grid-cols-1 md:grid-cols-3 gap-8">
-                        {/* Feature 1 */}
                         <div className="p-6 rounded-xl border border-white/5 bg-[#111] hover:border-emerald-500/30 transition-colors">
-                            <Zap className="w-10 h-10 text-emerald-400 mb-4" />
-                            <h3 className="text-xl font-bold mb-2">Instant Sync</h3>
-                            <p className="text-gray-500">Real-time WebSocket connection ensures you never miss a message from your team.</p>
+                            <UserPlus className="w-10 h-10 text-emerald-400 mb-4" />
+                            <h3 className="text-xl font-bold mb-2">Viral Invites</h3>
+                            <p className="text-gray-500">Invite any GitHub user and share a link instantly. No account required to receive it.</p>
                         </div>
-                        {/* Feature 2 */}
                         <div className="p-6 rounded-xl border border-white/5 bg-[#111] hover:border-blue-500/30 transition-colors">
-                            <Shield className="w-10 h-10 text-blue-400 mb-4" />
-                            <h3 className="text-xl font-bold mb-2">Secure & Private</h3>
-                            <p className="text-gray-500">Enterprise-grade security with JWT authentication and GitHub OAuth.</p>
+                            <Users className="w-10 h-10 text-blue-400 mb-4" />
+                            <h3 className="text-xl font-bold mb-2">Roster Presence</h3>
+                            <p className="text-gray-500">See who is online with last-seen timestamps so you know who is available.</p>
                         </div>
-                        {/* Feature 3 */}
                         <div className="p-6 rounded-xl border border-white/5 bg-[#111] hover:border-purple-500/30 transition-colors">
-                            <Globe className="w-10 h-10 text-purple-400 mb-4" />
-                            <h3 className="text-xl font-bold mb-2">Anywhere Access</h3>
-                            <p className="text-gray-500">Use it inside VS Code, or access the web dashboard from any device.</p>
+                            <CheckCheck className="w-10 h-10 text-purple-400 mb-4" />
+                            <h3 className="text-xl font-bold mb-2">Group Read Receipts</h3>
+                            <p className="text-gray-500">Know exactly who read critical messages with per-user read tracking.</p>
+                        </div>
+                        <div className="p-6 rounded-xl border border-white/5 bg-[#111] hover:border-amber-500/30 transition-colors">
+                            <Code2 className="w-10 h-10 text-amber-400 mb-4" />
+                            <h3 className="text-xl font-bold mb-2">Code Anchor</h3>
+                            <p className="text-gray-500">Paste GitHub links with line ranges and auto-expand code snippets.</p>
+                        </div>
+                        <div className="p-6 rounded-xl border border-white/5 bg-[#111] hover:border-emerald-500/30 transition-colors">
+                            <Paperclip className="w-10 h-10 text-emerald-400 mb-4" />
+                            <h3 className="text-xl font-bold mb-2">File Sharing</h3>
+                            <p className="text-gray-500">Share images and files in chat with clean previews and quick open.</p>
+                        </div>
+                        <div className="p-6 rounded-xl border border-white/5 bg-[#111] hover:border-cyan-500/30 transition-colors">
+                            <Activity className="w-10 h-10 text-cyan-400 mb-4" />
+                            <h3 className="text-xl font-bold mb-2">Real-Time Flow</h3>
+                            <p className="text-gray-500">Typing indicators, reactions, and live updates keep teams in sync.</p>
                         </div>
                     </div>
                 </div>

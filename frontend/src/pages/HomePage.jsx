@@ -3,29 +3,35 @@ import { useAuthStore } from "../store/authUser";
 import { 
     LogOut, Star, GitFork, MessageSquare, ArrowLeft, Send, Search, 
     Folder, FileCode, Users, Hash, ChevronLeft, Bell, Plus, Check, 
-    Paperclip, X, MoreVertical 
+    Paperclip, X, MoreVertical, Share2, Network, Copy, FolderSync, Upload, Settings, Code2
 } from "lucide-react";
 import axios from "axios";
 import io from "socket.io-client";
 import ReactMarkdown from 'react-markdown';
 import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter';
 import { vscDarkPlus } from 'react-syntax-highlighter/dist/esm/styles/prism';
+import { Link } from "react-router-dom"; // Import Link
 
 const socket = io("http://localhost:5000");
+const DEFAULT_REPO_BASE_PATH = "C:\\Users\\User\\Repo";
 
 // ================= 1. FILE EXPLORER COMPONENT =================
-// Moved OUTSIDE HomePage to prevent re-renders
-const FileExplorer = ({ repo }) => {
+// ================= 1. FILE EXPLORER COMPONENT =================
+const FileExplorer = ({ repo, onPullRepo, onOpenFile }) => {
     const [files, setFiles] = useState([]);
     const [currentPath, setCurrentPath] = useState("");
     const [loading, setLoading] = useState(false);
     const [viewingFile, setViewingFile] = useState(null);
     const [fileContent, setFileContent] = useState("");
+    const [fileDirty, setFileDirty] = useState(false);
+    const [saving, setSaving] = useState(false);
 
+    // Helper to get owner string safely
+    const getOwner = () => typeof repo.owner === 'object' ? repo.owner.login : repo.owner;
     const fetchFiles = async (path = "") => {
         setLoading(true);
         try {
-            const owner = typeof repo.owner === 'object' ? repo.owner.login : repo.owner;
+            const owner = getOwner();
             const repoName = repo.name;
             const res = await axios.get(`http://localhost:5000/api/repos/files`, {
                 params: { owner, repoName, path }
@@ -51,16 +57,50 @@ const FileExplorer = ({ repo }) => {
             try {
                 setViewingFile(file.name);
                 setFileContent("Loading...");
-                const owner = typeof repo.owner === "object" ? repo.owner.login : repo.owner;
-                const res = await axios.get("http://localhost:5000/api/repos/content", {
-                    params: { owner, repoName: repo.name, path: file.path }
+                setFileDirty(false);
+                const owner = getOwner();
+                const res = await axios.get("http://localhost:5000/api/repos/local-content", {
+                    params: { owner, repoName: repo.name, filePath: file.path }
                 });
                 setFileContent(res.data.content);
+                if (onOpenFile) {
+                    onOpenFile(owner, repo.name, file.path);
+                }
             } catch (error) {
                 setFileContent("Error loading file content.");
             }
         }
     };
+
+    const handleSaveFile = async () => {
+        try {
+            setSaving(true);
+            const owner = getOwner();
+            const filePath = currentPath ? `${currentPath}/${viewingFile}` : viewingFile;
+            await axios.put("http://localhost:5000/api/repos/local-content", {
+                owner,
+                repoName: repo.name,
+                filePath,
+                content: fileContent
+            });
+            setFileDirty(false);
+        } catch (error) {
+            alert("Failed to save file.");
+        } finally {
+            setSaving(false);
+        }
+    };
+
+    const isGraphSupported = (name) => {
+        if (!name) return false;
+        const ext = name.toLowerCase().split(".").pop();
+        return ["js", "jsx", "ts", "tsx"].includes(ext);
+    };
+
+    // Construct Visualization URL safely
+    const vizUrl = viewingFile 
+        ? `/architecture?owner=${encodeURIComponent(getOwner())}&repo=${encodeURIComponent(repo.name)}&path=${encodeURIComponent(currentPath ? currentPath + '/' + viewingFile : viewingFile)}`
+        : "#";
 
     return (
         <div className="flex flex-col h-full bg-[#0C0C0C] relative">
@@ -71,6 +111,11 @@ const FileExplorer = ({ repo }) => {
                 <span className="text-emerald-500">root</span>
                 {currentPath && <span className="text-gray-600">/</span>}
                 <span>{currentPath}</span>
+                <div className="ml-auto">
+                    <button onClick={onPullRepo} className="text-[10px] px-2 py-1 bg-emerald-500/20 text-emerald-400 rounded border border-emerald-500/20 hover:bg-emerald-500/30">
+                        Pull Repo
+                    </button>
+                </div>
             </div>
 
             <div className="flex-1 overflow-y-auto p-4">
@@ -89,13 +134,45 @@ const FileExplorer = ({ repo }) => {
             {viewingFile && (
                 <div className="absolute inset-0 z-50 bg-[#1e1e1e] flex flex-col animate-in slide-in-from-bottom-5">
                     <div className="flex justify-between items-center p-3 border-b border-white/10 bg-[#252526]">
-                        <span className="text-sm font-mono text-emerald-400 flex items-center gap-2"><FileCode size={14} /> {viewingFile}</span>
-                        <button onClick={() => setViewingFile(null)} className="text-gray-400 hover:text-white"><X size={18} /></button>
+                        <span className="text-sm font-mono text-emerald-400 flex items-center gap-2">
+                            <FileCode size={14} /> {viewingFile}
+                        </span>
+                        
+                        <div className="flex items-center gap-2">
+                            {/* 👇 FIXED BUTTON: Uses pre-calculated safe URL */}
+                            {isGraphSupported(viewingFile) ? (
+                                <Link 
+                                    to={vizUrl}
+                                    className="flex items-center gap-2 text-[10px] bg-purple-500/20 text-purple-400 px-2 py-1 rounded hover:bg-purple-500/30 transition-colors"
+                                >
+                                    <Network size={12} /> Graph
+                                </Link>
+                            ) : (
+                                <span className="text-[10px] text-gray-500 px-2 py-1 rounded border border-white/10">
+                                    Graph (JS/TS only)
+                                </span>
+                            )}
+
+                            <button
+                                onClick={handleSaveFile}
+                                disabled={!fileDirty || saving}
+                                className="flex items-center gap-2 text-[10px] bg-emerald-500/20 text-emerald-400 px-2 py-1 rounded hover:bg-emerald-500/30 transition-colors disabled:opacity-40"
+                            >
+                                {saving ? "Saving..." : "Save"}
+                            </button>
+
+                            <button onClick={() => setViewingFile(null)} className="text-gray-400 hover:text-white">
+                                <X size={18} />
+                            </button>
+                        </div>
                     </div>
                     <div className="flex-1 overflow-auto p-4 bg-[#1e1e1e]">
-                        <SyntaxHighlighter style={vscDarkPlus} language="javascript" customStyle={{ margin: 0, padding: 0, background: 'transparent' }}>
-                            {fileContent}
-                        </SyntaxHighlighter>
+                        <textarea
+                            value={fileContent}
+                            onChange={(e) => { setFileContent(e.target.value); setFileDirty(true); }}
+                            className="w-full h-full bg-transparent text-gray-200 font-mono text-xs outline-none resize-none"
+                            spellCheck={false}
+                        />
                     </div>
                 </div>
             )}
@@ -104,21 +181,21 @@ const FileExplorer = ({ repo }) => {
 };
 
 // ================= 2. CHAT COMPONENT =================
-// Moved OUTSIDE HomePage to prevent re-renders
 const ChatComponent = ({ repo }) => {
-    const { authUser } = useAuthStore(); // Access store directly
+    const { authUser } = useAuthStore();
     const [messages, setMessages] = useState([]);
     const [text, setText] = useState("");
     const [typingUsers, setTypingUsers] = useState(new Set());
     const [replyingTo, setReplyingTo] = useState(null);
     const [editingId, setEditingId] = useState(null);
     const [isUploading, setIsUploading] = useState(false);
+    const [codeAnchors, setCodeAnchors] = useState({});
+    const [codeSelection, setCodeSelection] = useState(null);
     const bottomRef = useRef(null);
     const fileInputRef = useRef(null);
     const typingTimeoutRef = useRef(null);
 
     useEffect(() => {
-        socket.emit("joinRepo", repo.id);
         axios.get(`http://localhost:5000/api/repos/${repo.id}/messages`)
             .then((res) => setMessages(res.data))
             .catch(console.error);
@@ -143,6 +220,54 @@ const ChatComponent = ({ repo }) => {
 
     useEffect(() => bottomRef.current?.scrollIntoView({ behavior: "smooth" }), [messages, typingUsers]);
 
+    const findCodeAnchorUrl = (text) => {
+        if (!text) return null;
+        const match = text.match(/https?:\/\/github\.com\/[^\s]+\/blob\/[^\s#]+#L\d+(?:-L\d+)?/);
+        return match ? match[0] : null;
+    };
+
+    useEffect(() => {
+        const urls = messages
+            .map(m => (m.type === "text" ? findCodeAnchorUrl(m.text) : null))
+            .filter(Boolean);
+
+        urls.forEach((url) => {
+            if (codeAnchors[url]) return;
+            axios.post("http://localhost:5000/api/repos/code-anchor", { url })
+                .then(res => {
+                    setCodeAnchors(prev => ({ ...prev, [url]: res.data }));
+                })
+                .catch(() => {});
+        });
+    }, [messages, codeAnchors]);
+
+    useEffect(() => {
+        if (!authUser?.username) return;
+        messages.forEach((m) => {
+            if (!m._id) return;
+            if (m.sender === authUser.username) return;
+            const hasRead = m.readBy?.some(r => r.username === authUser.username);
+            if (!hasRead) {
+                socket.emit("read_message", { messageId: m._id, repoId: repo.id, username: authUser.username });
+            }
+        });
+    }, [messages, repo.id, authUser?.username]);
+
+    useEffect(() => {
+        const handleMessage = (event) => {
+            if (event?.data?.command === "selectionChanged") {
+                setCodeSelection({
+                    filePath: event.data.filePath,
+                    lineStart: event.data.lineStart,
+                    lineEnd: event.data.lineEnd,
+                    code: event.data.text
+                });
+            }
+        };
+        window.addEventListener("message", handleMessage);
+        return () => window.removeEventListener("message", handleMessage);
+    }, []);
+
     const handleSend = (e) => {
         e.preventDefault();
         if (!text.trim()) return;
@@ -160,6 +285,20 @@ const ChatComponent = ({ repo }) => {
         }
         socket.emit("stopTyping", { repoId: repo.id, username: authUser.username });
         setText("");
+        setReplyingTo(null);
+    };
+
+    const handleSendSelection = () => {
+        if (!codeSelection) return;
+        socket.emit("sendMessage", {
+            repoId: repo.id,
+            text: text.trim() || "Shared a code selection",
+            sender: authUser.username,
+            codeSelection
+        });
+        socket.emit("stopTyping", { repoId: repo.id, username: authUser.username });
+        setText("");
+        setCodeSelection(null);
         setReplyingTo(null);
     };
 
@@ -197,8 +336,6 @@ const ChatComponent = ({ repo }) => {
                 setReplyingTo(null); 
             }
             else if (action === "delete") { 
-                // 👇 FIX: Removed confirm() because VS Code blocks it.
-                // It will now delete immediately when clicked.
                 socket.emit("messageAction", { action: "delete", messageId: msg._id, repoId: repo.id }); 
             }
             else if (action.startsWith("react:")) {
@@ -214,6 +351,9 @@ const ChatComponent = ({ repo }) => {
             <div className="flex-1 overflow-y-auto p-4 space-y-2 custom-scrollbar">
                 {messages.map((m) => {
                     const isMe = m.sender === authUser.username;
+                    const codeUrl = m.type === "text" ? findCodeAnchorUrl(m.text) : null;
+                    const anchor = codeUrl ? codeAnchors[codeUrl] : null;
+                    const readByNames = m.readBy?.map(r => r.username).filter(Boolean) || [];
                     return (
                         <div key={m._id || Math.random()} className={`flex flex-col ${isMe ? "items-end" : "items-start"} mb-2 group`}>
                             {m.replyTo && (
@@ -234,16 +374,50 @@ const ChatComponent = ({ repo }) => {
                                             <span className="truncate text-xs text-emerald-400 underline">{m.text.split('/').pop()}</span>
                                         </div>
                                     ) : (
-                                        <ReactMarkdown components={{ code({node, inline, className, children, ...props}) { return <code className={`${inline ? "bg-black/20 px-1 rounded" : "block bg-black/30 p-2 rounded text-xs"} font-mono text-emerald-300`} {...props}>{children}</code> }}}>
-                                            {m.text}
-                                        </ReactMarkdown>
+                                        <>
+                                            {m.codeSelection && (
+                                                <div className="mb-2 border border-emerald-500/20 rounded-lg overflow-hidden bg-black/30">
+                                                    <div className="px-3 py-2 text-[11px] text-emerald-300 border-b border-white/10 font-mono flex items-center gap-2">
+                                                        <Code2 size={12} />
+                                                        {m.codeSelection.filePath} (L{m.codeSelection.lineStart}-L{m.codeSelection.lineEnd})
+                                                    </div>
+                                                    <div className="p-3">
+                                                        <SyntaxHighlighter style={vscDarkPlus} language="javascript" customStyle={{ margin: 0, padding: 0, background: 'transparent' }}>
+                                                            {m.codeSelection.code}
+                                                        </SyntaxHighlighter>
+                                                    </div>
+                                                </div>
+                                            )}
+                                            <ReactMarkdown components={{ code({node, inline, className, children, ...props}) { return <code className={`${inline ? "bg-black/20 px-1 rounded" : "block bg-black/30 p-2 rounded text-xs"} font-mono text-emerald-300`} {...props}>{children}</code> }}}>
+                                                {m.text}
+                                            </ReactMarkdown>
+                                            {anchor && (
+                                                <div className="mt-2 border border-white/10 rounded-lg overflow-hidden bg-black/30">
+                                                    <div className="px-3 py-2 text-[11px] text-emerald-300 border-b border-white/10 font-mono">
+                                                        {anchor.filename} (L{anchor.startLine}-L{anchor.endLine})
+                                                    </div>
+                                                    <div className="p-3">
+                                                        <SyntaxHighlighter style={vscDarkPlus} language={anchor.language} customStyle={{ margin: 0, padding: 0, background: 'transparent' }}>
+                                                            {anchor.code}
+                                                        </SyntaxHighlighter>
+                                                    </div>
+                                                </div>
+                                            )}
+                                        </>
                                     )}
                                 </div>
 
                                 <div className="absolute bottom-1 right-2 flex items-end gap-1 select-none">
                                     {m.isEdited && <span className="text-[10px] text-gray-400 italic">edited</span>}
                                     <span className="text-[10px] text-gray-400">{formatTime(m.createdAt)}</span>
-                                    {isMe && <span className={m.status === 'read' ? "text-[#53bdeb]" : "text-gray-400"}>✓✓</span>}
+                                    {isMe && (
+                                        <span
+                                            className={(readByNames.length > 0 || m.status === "read") ? "text-[#53bdeb]" : "text-gray-400"}
+                                            title={readByNames.length > 0 ? `Read by: ${readByNames.join(", ")}` : "Delivered"}
+                                        >
+                                            {m.status === "sent" ? "✓" : "✓✓"}
+                                        </span>
+                                    )}
                                 </div>
 
                                 <div className="absolute -top-3 right-0 opacity-0 group-hover:opacity-100 transition-opacity bg-[#202c33] border border-white/10 rounded-md shadow-lg flex items-center overflow-hidden scale-90">
@@ -268,6 +442,17 @@ const ChatComponent = ({ repo }) => {
             </div>
 
             <div className="p-2 bg-[#202c33] flex flex-col gap-2">
+                {codeSelection && (
+                    <div className="flex items-center justify-between bg-[#1c2b33] p-2 rounded-lg border border-emerald-500/20">
+                        <div className="text-xs text-emerald-300 font-mono truncate">
+                            Selected: {codeSelection.filePath} (L{codeSelection.lineStart}-L{codeSelection.lineEnd})
+                        </div>
+                        <div className="flex gap-2">
+                            <button onClick={() => setCodeSelection(null)} className="text-xs text-gray-400 hover:text-white">Clear</button>
+                            <button onClick={handleSendSelection} className="text-xs bg-emerald-600 px-2 py-1 rounded font-bold">Send Selection</button>
+                        </div>
+                    </div>
+                )}
                 {replyingTo && (
                         <div className="flex justify-between items-center bg-[#182229] p-2 rounded-lg border-l-4 border-[#00a884]">
                         <div className="text-xs text-gray-300">
@@ -293,18 +478,13 @@ const ChatComponent = ({ repo }) => {
 };
 
 // ================= 3. REPO TABS COMPONENT =================
-// Moved OUTSIDE HomePage to prevent re-renders
-const RepoTabs = ({ repo }) => {
+const RepoTabs = ({ repo, setShowInviteModal, presenceRoster, onPullRepo, onOpenFile }) => {
     const [activeTab, setActiveTab] = useState("MAIN");
-    const [members, setMembers] = useState([]);
 
-    useEffect(() => {
-        if (activeTab === "GROUPS") {
-            axios.get(`http://localhost:5000/api/repos/${repo.id}/members`)
-                .then(res => setMembers(res.data))
-                .catch(console.error);
-        }
-    }, [activeTab, repo.id]);
+    const formatLastSeen = (iso) => {
+        if (!iso) return "unknown";
+        return new Date(iso).toLocaleString();
+    };
 
     return (
         <>
@@ -314,9 +494,8 @@ const RepoTabs = ({ repo }) => {
                 ))}
             </div>
             <div className="flex-1 overflow-hidden relative">
-                {/* Now using direct components, not props */}
                 {activeTab === "MAIN" && <ChatComponent repo={repo} />}
-                {activeTab === "FILES" && <FileExplorer repo={repo} />}
+                {activeTab === "FILES" && <FileExplorer repo={repo} onPullRepo={onPullRepo} onOpenFile={onOpenFile} />}
                 {activeTab === "GROUPS" && (
                     <div className="p-6">
                         <h3 className="text-xs font-bold text-gray-500 uppercase mb-4">Repository Members</h3>
@@ -332,15 +511,18 @@ const RepoTabs = ({ repo }) => {
                                     </div>
                                 </div>
                             </div>
-                            {members.map(member => (
-                                <div key={member._id} className="flex items-center justify-between bg-[#1A1A1A] p-3 rounded-lg border border-white/5">
+                            {presenceRoster.map(member => (
+                                <div key={member.username} className="flex items-center justify-between bg-[#1A1A1A] p-3 rounded-lg border border-white/5">
                                     <div className="flex items-center gap-3">
-                                        <img src={member.avatarUrl} className="w-8 h-8 rounded-full bg-black" />
+                                        <div className={`w-2.5 h-2.5 rounded-full ${member.status === "online" ? "bg-emerald-400" : "bg-gray-600"}`} />
                                         <div>
                                             <p className="font-bold text-sm text-white">{member.username}</p>
-                                            <span className="text-[10px] bg-blue-500/20 text-blue-400 px-1.5 py-0.5 rounded">MEMBER</span>
+                                            <span className="text-[10px] text-gray-400">Last seen: {formatLastSeen(member.lastSeen)}</span>
                                         </div>
                                     </div>
+                                    <span className={`text-[10px] px-1.5 py-0.5 rounded ${member.status === "online" ? "bg-emerald-500/20 text-emerald-400" : "bg-gray-500/20 text-gray-400"}`}>
+                                        {member.status === "online" ? "ONLINE" : "OFFLINE"}
+                                    </span>
                                 </div>
                             ))}
                         </div>
@@ -357,12 +539,21 @@ const HomePage = () => {
     const [repos, setRepos] = useState([]);
     const [selectedRepo, setSelectedRepo] = useState(null);
     const [searchQuery, setSearchQuery] = useState("");
+    const [presenceRoster, setPresenceRoster] = useState([]);
+    const [showRepoPathModal, setShowRepoPathModal] = useState(false);
+    const [repoBasePath, setRepoBasePath] = useState(DEFAULT_REPO_BASE_PATH);
+    const [gitLoading, setGitLoading] = useState(false);
     
     // Invite States
     const [invites, setInvites] = useState([]);
     const [showInvites, setShowInvites] = useState(false);
     const [showInviteModal, setShowInviteModal] = useState(false);
     const [inviteUsername, setInviteUsername] = useState("");
+    const [inviteResults, setInviteResults] = useState([]);
+    const [inviteLink, setInviteLink] = useState("");
+    const [isSearching, setIsSearching] = useState(false);
+    const [showCommitModal, setShowCommitModal] = useState(false);
+    const [commitMessage, setCommitMessage] = useState("");
 
     // 1. Fetch Repos & Invites
     const fetchData = async () => {
@@ -378,6 +569,71 @@ const HomePage = () => {
 
     useEffect(() => { fetchData(); }, []);
 
+    useEffect(() => {
+        if (selectedRepo || repos.length === 0) return;
+        const lastRepoId = localStorage.getItem("lastSelectedRepoId");
+        if (!lastRepoId) return;
+        const found = repos.find(r => String(r.id) === String(lastRepoId));
+        if (found) setSelectedRepo(found);
+    }, [repos, selectedRepo]);
+
+    useEffect(() => {
+        if (authUser?.repoBasePath) setRepoBasePath(authUser.repoBasePath);
+    }, [authUser?.repoBasePath]);
+
+    useEffect(() => {
+        if (!authUser) return;
+        const pendingToken = localStorage.getItem("pendingInviteToken");
+        if (!pendingToken) return;
+
+        axios.get(`http://localhost:5000/api/invites/accept/${pendingToken}`)
+            .then(() => {
+                localStorage.removeItem("pendingInviteToken");
+                fetchData();
+            })
+            .catch(() => {});
+    }, [authUser]);
+
+    useEffect(() => {
+        if (!selectedRepo || !authUser?.username) return;
+
+        setPresenceRoster([]);
+        socket.emit("joinRepo", { repoId: selectedRepo.id, username: authUser.username });
+
+        const handleState = (roster) => setPresenceRoster(roster);
+        const handleDelta = (delta) => {
+            setPresenceRoster(prev => {
+                const map = new Map(prev.map(p => [p.username, p]));
+                map.set(delta.username, { ...map.get(delta.username), ...delta });
+                return Array.from(map.values());
+            });
+        };
+
+        socket.on("presence_state", handleState);
+        socket.on("presence_delta", handleDelta);
+
+        return () => {
+            socket.off("presence_state", handleState);
+            socket.off("presence_delta", handleDelta);
+        };
+    }, [selectedRepo, authUser?.username]);
+
+    useEffect(() => {
+        if (!showInviteModal) return;
+        const q = inviteUsername.trim();
+        if (!q) { setInviteResults([]); return; }
+
+        setIsSearching(true);
+        const t = setTimeout(() => {
+            axios.get("http://localhost:5000/api/invites/search-users", { params: { q } })
+                .then(res => setInviteResults(res.data || []))
+                .catch(() => setInviteResults([]))
+                .finally(() => setIsSearching(false));
+        }, 300);
+
+        return () => clearTimeout(t);
+    }, [inviteUsername, showInviteModal]);
+
     const handleAcceptInvite = async (inviteId) => {
         try {
             await axios.post("http://localhost:5000/api/invites/accept", { inviteId });
@@ -388,16 +644,95 @@ const HomePage = () => {
 
     const handleSendInvite = async () => {
         try {
-            await axios.post("http://localhost:5000/api/invites/send", {
+            const res = await axios.post("http://localhost:5000/api/invites/send", {
                 receiverUsername: inviteUsername,
                 repoId: selectedRepo.id,
                 repoName: selectedRepo.name,
                 repoOwner: typeof selectedRepo.owner === 'object' ? selectedRepo.owner.login : selectedRepo.owner
             });
-            setShowInviteModal(false);
-            setInviteUsername("");
-            alert("Invite sent!");
+            setInviteLink(res.data?.inviteLink || "");
+            alert("Invite sent! Copy the invite link below.");
         } catch (error) { alert("User not found or already invited"); }
+    };
+
+    const handleSaveRepoPath = async () => {
+        try {
+            await axios.post("http://localhost:5000/api/user/repo-path", { repoBasePath });
+            setShowRepoPathModal(false);
+        } catch (e) {
+            alert("Failed to save repo path");
+        }
+    };
+
+    const handlePullRepo = async () => {
+        if (!selectedRepo) return;
+        const basePathToUse = repoBasePath || DEFAULT_REPO_BASE_PATH;
+        try {
+            setGitLoading(true);
+            if (!repoBasePath) {
+                await axios.post("http://localhost:5000/api/user/repo-path", { repoBasePath: basePathToUse });
+                setRepoBasePath(basePathToUse);
+            }
+            await axios.post("http://localhost:5000/api/repos/pull", {
+                owner: typeof selectedRepo.owner === 'object' ? selectedRepo.owner.login : selectedRepo.owner,
+                repoName: selectedRepo.name
+            });
+            alert("Repo pulled!");
+        } catch (e) {
+            alert("Pull failed. Check repo path and permissions.");
+        } finally {
+            setGitLoading(false);
+        }
+    };
+
+    const handlePushRepo = async () => {
+        if (!selectedRepo) return;
+        const basePathToUse = repoBasePath || DEFAULT_REPO_BASE_PATH;
+        try {
+            setGitLoading(true);
+            if (!repoBasePath) {
+                await axios.post("http://localhost:5000/api/user/repo-path", { repoBasePath: basePathToUse });
+                setRepoBasePath(basePathToUse);
+            }
+            const message = commitMessage || "";
+            await axios.post("http://localhost:5000/api/repos/push", {
+                owner: typeof selectedRepo.owner === 'object' ? selectedRepo.owner.login : selectedRepo.owner,
+                repoName: selectedRepo.name,
+                commitMessage: message
+            });
+            alert("Push complete.");
+        } catch (e) {
+            alert("Push failed. Ensure you have commits to push.");
+        } finally {
+            setGitLoading(false);
+        }
+    };
+
+    const sendToExtension = (message) => {
+        if (window.parent !== window) {
+            window.parent.postMessage(message, "*");
+        }
+    };
+
+    const handleOpenFile = async (owner, repoName, filePath) => {
+        try {
+            const res = await axios.get("http://localhost:5000/api/repos/local-path", {
+                params: { owner, repoName, filePath }
+            });
+            const fullPath = res.data.path;
+            const vscodeUri = `vscode://file/${fullPath.replace(/\\/g, "/")}`;
+            sendToExtension({ command: "openFile", path: fullPath, vscodeUri });
+            window.open(vscodeUri, "_blank");
+        } catch (e) {
+            alert("File not found locally. Pull repo first.");
+        }
+    };
+
+    const handleCopyInvite = async () => {
+        if (!inviteLink) return;
+        try {
+            await navigator.clipboard.writeText(inviteLink);
+        } catch (e) {}
     };
 
     const filteredRepos = repos.filter(repo => repo.name.toLowerCase().includes(searchQuery.toLowerCase()));
@@ -434,38 +769,151 @@ const HomePage = () => {
                                 </div>
                             )}
                         </div>
+                        <button onClick={() => setShowRepoPathModal(true)} className="p-2 hover:bg-white/10 rounded-full text-gray-400 hover:text-white">
+                            <Settings size={18} />
+                        </button>
                         <button onClick={logout} className="text-gray-500 hover:text-red-400"><LogOut size={20} /></button>
                     </div>
                 </div>
 
                 {/* Workspace / Grid Switcher */}
-                {selectedRepo ? (
-                    <div className="flex flex-col h-[calc(100vh-8rem)] bg-[#111] border border-white/10 rounded-xl overflow-hidden shadow-2xl relative">
-                        <div className="border-b border-white/5 bg-[#151515] p-4 flex justify-between items-center">
-                            <div className="flex items-center gap-4">
-                                <button onClick={() => setSelectedRepo(null)} className="p-1 hover:bg-white/10 rounded text-gray-400 hover:text-white"><ArrowLeft size={18} /></button>
-                                <h2 className="font-bold text-lg">{selectedRepo.name}</h2>
+                        {selectedRepo ? (
+                            <div className="flex flex-col h-[calc(100vh-8rem)] bg-[#111] border border-white/10 rounded-xl overflow-hidden shadow-2xl relative">
+                                <div className="border-b border-white/5 bg-[#151515] p-4 flex justify-between items-center">
+                                    <div className="flex items-center gap-4">
+                                        <button
+                                            onClick={() => {
+                                                localStorage.removeItem("lastSelectedRepoId");
+                                                setSelectedRepo(null);
+                                            }}
+                                            className="p-1 hover:bg-white/10 rounded text-gray-400 hover:text-white"
+                                        >
+                                            <ArrowLeft size={18} />
+                                        </button>
+                                        <h2 className="font-bold text-lg">{selectedRepo.name}</h2>
+                                    </div>
+                            <div className="flex gap-2">
+                                <button onClick={handlePullRepo} disabled={gitLoading} className="flex items-center gap-2 text-xs bg-emerald-500/10 text-emerald-400 hover:bg-emerald-500/20 px-3 py-1.5 rounded-full border border-emerald-500/20">
+                                    <FolderSync size={12} /> {gitLoading ? "Working..." : "Pull"}
+                                </button>
+                                <button
+                                    onClick={() => { setCommitMessage(""); setShowCommitModal(true); }}
+                                    disabled={gitLoading}
+                                    className="flex items-center gap-2 text-xs bg-blue-500/10 text-blue-400 hover:bg-blue-500/20 px-3 py-1.5 rounded-full border border-blue-500/20"
+                                >
+                                    <Upload size={12} /> Push
+                                </button>
+                                {/* 👇 FIX: Pass owner and repo params */}
+                                <Link 
+                                    to={`/architecture?owner=${typeof selectedRepo.owner === 'object' ? selectedRepo.owner.login : selectedRepo.owner}&repo=${selectedRepo.name}`}
+                                    className="flex items-center gap-2 text-xs bg-purple-500/10 text-purple-400 hover:bg-purple-500/20 px-3 py-1.5 rounded-full border border-purple-500/20"
+                                >
+                                    <Network size={12} /> Visualize
+                                </Link>
+                                <button
+                                    onClick={() => { setInviteUsername(""); setInviteResults([]); setInviteLink(""); setShowInviteModal(true); }}
+                                    className="flex items-center gap-2 text-xs bg-white/5 hover:bg-white/10 px-3 py-1.5 rounded-full border border-white/5"
+                                >
+                                    <Plus size={12} /> Invite
+                                </button>
                             </div>
-                            <button onClick={() => setShowInviteModal(true)} className="flex items-center gap-2 text-xs bg-white/5 hover:bg-white/10 px-3 py-1.5 rounded-full border border-white/5"><Plus size={12} /> Invite</button>
                         </div>
+                        {showCommitModal && (
+                            <div className="absolute inset-0 bg-black/80 z-50 flex items-center justify-center p-4 backdrop-blur-sm">
+                                <div className="bg-[#1A1A1A] p-6 rounded-xl border border-white/10 w-full max-w-sm">
+                                    <h3 className="text-lg font-bold mb-4">Commit and Push</h3>
+                                    <input
+                                        autoFocus
+                                        type="text"
+                                        placeholder="Commit message (optional)"
+                                        className="w-full bg-[#0C0C0C] border border-white/10 rounded-lg p-3 text-sm text-white mb-4 focus:border-emerald-500 outline-none"
+                                        value={commitMessage}
+                                        onChange={(e) => setCommitMessage(e.target.value)}
+                                    />
+                                    <div className="flex gap-2">
+                                        <button onClick={() => { setShowCommitModal(false); setCommitMessage(""); }} className="flex-1 py-2 bg-gray-800 rounded-lg text-sm">Cancel</button>
+                                        <button
+                                            onClick={() => { setShowCommitModal(false); handlePushRepo(); }}
+                                            className="flex-1 py-2 bg-emerald-600 rounded-lg text-sm font-bold"
+                                        >
+                                            Push
+                                        </button>
+                                    </div>
+                                    <div className="text-[11px] text-gray-500 mt-2">Leave empty to push existing commits only.</div>
+                                </div>
+                            </div>
+                        )}
+
                         {showInviteModal && (
                             <div className="absolute inset-0 bg-black/80 z-50 flex items-center justify-center p-4 backdrop-blur-sm">
                                 <div className="bg-[#1A1A1A] p-6 rounded-xl border border-white/10 w-full max-w-sm">
                                     <h3 className="text-lg font-bold mb-4">Invite to {selectedRepo.name}</h3>
-                                    <input autoFocus type="text" placeholder="Enter username..." className="w-full bg-[#0C0C0C] border border-white/10 rounded-lg p-3 text-sm text-white mb-4 focus:border-emerald-500 outline-none" value={inviteUsername} onChange={(e) => setInviteUsername(e.target.value)} />
-                                    <div className="flex gap-2"><button onClick={() => setShowInviteModal(false)} className="flex-1 py-2 bg-gray-800 rounded-lg text-sm">Cancel</button><button onClick={handleSendInvite} className="flex-1 py-2 bg-emerald-600 rounded-lg text-sm font-bold">Send</button></div>
+                                    <input autoFocus type="text" placeholder="Search GitHub username..." className="w-full bg-[#0C0C0C] border border-white/10 rounded-lg p-3 text-sm text-white mb-2 focus:border-emerald-500 outline-none" value={inviteUsername} onChange={(e) => setInviteUsername(e.target.value)} />
+
+                                    {isSearching && <div className="text-xs text-gray-500 mb-2">Searching...</div>}
+                                    {inviteResults.length > 0 && (
+                                        <div className="max-h-40 overflow-auto mb-3 bg-[#0C0C0C] border border-white/10 rounded-lg">
+                                            {inviteResults.map(u => (
+                                                <button key={u.id} onClick={() => setInviteUsername(u.login)} className="w-full flex items-center gap-2 p-2 hover:bg-white/5 text-left">
+                                                    <img src={u.avatar_url} className="w-6 h-6 rounded-full" />
+                                                    <span className="text-sm text-white">{u.login}</span>
+                                                </button>
+                                            ))}
+                                        </div>
+                                    )}
+
+                                    {inviteLink && (
+                                        <div className="mb-3">
+                                            <div className="text-[11px] text-gray-400 mb-1">Invite Link</div>
+                                            <div className="flex gap-2">
+                                                <input readOnly value={inviteLink} className="flex-1 bg-[#0C0C0C] border border-white/10 rounded-lg p-2 text-xs text-white" />
+                                                <button onClick={handleCopyInvite} className="px-3 bg-emerald-600 rounded-lg text-xs font-bold flex items-center gap-1"><Copy size={12} /> Copy</button>
+                                            </div>
+                                            <div className="text-[10px] text-gray-500 mt-1">Share this in GitHub issues/PRs or DM.</div>
+                                        </div>
+                                    )}
+
+                                    <div className="flex gap-2">
+                                        <button onClick={() => { setShowInviteModal(false); setInviteUsername(""); setInviteResults([]); setInviteLink(""); }} className="flex-1 py-2 bg-gray-800 rounded-lg text-sm">Cancel</button>
+                                        <button onClick={handleSendInvite} className="flex-1 py-2 bg-emerald-600 rounded-lg text-sm font-bold">Send</button>
+                                    </div>
+                                </div>
+                            </div>
+                        )}
+                        {showRepoPathModal && (
+                            <div className="absolute inset-0 bg-black/80 z-50 flex items-center justify-center p-4 backdrop-blur-sm">
+                                <div className="bg-[#1A1A1A] p-6 rounded-xl border border-white/10 w-full max-w-sm">
+                                    <h3 className="text-lg font-bold mb-4">Local Repo Path</h3>
+                                    <input
+                                        autoFocus
+                                        type="text"
+                                        placeholder="C:\\Users\\User\\Repos"
+                                        className="w-full bg-[#0C0C0C] border border-white/10 rounded-lg p-3 text-sm text-white mb-4 focus:border-emerald-500 outline-none"
+                                        value={repoBasePath}
+                                        onChange={(e) => setRepoBasePath(e.target.value)}
+                                    />
+                                    <div className="flex gap-2">
+                                        <button onClick={() => setShowRepoPathModal(false)} className="flex-1 py-2 bg-gray-800 rounded-lg text-sm">Cancel</button>
+                                        <button onClick={handleSaveRepoPath} className="flex-1 py-2 bg-emerald-600 rounded-lg text-sm font-bold">Save</button>
+                                    </div>
                                 </div>
                             </div>
                         )}
                         <div className="flex-1 flex flex-col">
-                            {/* Updated Usage: No props needed for sub-components, just the repo */}
-                            <RepoTabs repo={selectedRepo} />
+                            <RepoTabs repo={selectedRepo} setShowInviteModal={setShowInviteModal} presenceRoster={presenceRoster} onPullRepo={handlePullRepo} onOpenFile={handleOpenFile} />
                         </div>
                     </div>
                 ) : (
                     <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
                         {filteredRepos.map((repo) => (
-                            <div key={repo.id} onClick={() => setSelectedRepo(repo)} className={`group bg-[#111]/50 border hover:border-emerald-500/30 p-5 rounded-xl cursor-pointer ${repo.isShared ? 'border-purple-500/30' : 'border-white/5'}`}>
+                            <div
+                                key={repo.id}
+                                onClick={() => {
+                                    localStorage.setItem("lastSelectedRepoId", String(repo.id));
+                                    setSelectedRepo(repo);
+                                }}
+                                className={`group bg-[#111]/50 border hover:border-emerald-500/30 p-5 rounded-xl cursor-pointer ${repo.isShared ? 'border-purple-500/30' : 'border-white/5'}`}
+                            >
                                 <div className="flex justify-between items-start mb-3">
                                     <h3 className="font-semibold text-gray-200 truncate w-3/4">{repo.name}</h3>
                                     {repo.isShared && <span className="text-[10px] bg-purple-500/20 text-purple-400 px-1.5 py-0.5 rounded">SHARED</span>}

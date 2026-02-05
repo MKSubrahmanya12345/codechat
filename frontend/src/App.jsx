@@ -4,6 +4,8 @@ import { useAuthStore } from "./store/authUser";
 import HomePage from "./pages/HomePage";
 import HeroPage from "./pages/HeroPage";
 import { Loader } from "lucide-react";
+import ArchitecturePage from "./pages/ArchitecturePage"; // 👈 THIS WAS MISSING
+import InviteAcceptPage from "./pages/InviteAcceptPage";
 import axios from "axios"; // 👈 IMPORT AXIOS
 
 function App() {
@@ -49,6 +51,8 @@ function App() {
         <Routes>
             <Route path="/" element={!authUser ? <HeroPage /> : <Navigate to="/home" />} />
             <Route path="/home" element={authUser ? <HomePage /> : <Navigate to="/" />} />
+            <Route path="/architecture" element={authUser ? <ArchitecturePage /> : <Navigate to="/" />} />
+            <Route path="/invite/:token" element={<InviteAcceptPage />} />
         </Routes>
     );
 }

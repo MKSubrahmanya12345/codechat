@@ -12,7 +12,7 @@ export const githubLogin = (req, res) => {
         `https://github.com/login/oauth/authorize` +
         `?client_id=${process.env.GITHUB_CLIENT_ID}` +
         `&redirect_uri=${redirectUrl}` +
-        `&scope=read:user user:email`;
+        `&scope=read:user user:email repo`;
 
     res.redirect(githubAuthUrl);
 };
@@ -82,19 +82,52 @@ export const githubCallback = async (req, res) => {
         /* ----------------------------------------------------
            3. Upsert user in DB (token always refreshed)
         ---------------------------------------------------- */
-        const user = await User.findOneAndUpdate(
-            { githubId: id.toString() },
-            {
-                username: login,
-                avatarUrl: avatar_url,
-                email,
-                githubToken: accessToken, // server-only usage
-            },
-            {
-                new: true,
-                upsert: true,
+        let user = await User.findOne({ githubId: id.toString() });
+
+        if (user) {
+            user = await User.findByIdAndUpdate(
+                user._id,
+                {
+                    username: login,
+                    avatarUrl: avatar_url,
+                    email,
+                    githubToken: accessToken,
+                    status: "active"
+                },
+                { new: true }
+            );
+        } else {
+            const shadow = await User.findOne({ username: login, status: "shadow" });
+            if (shadow) {
+                user = await User.findByIdAndUpdate(
+                    shadow._id,
+                    {
+                        githubId: id.toString(),
+                        username: login,
+                        avatarUrl: avatar_url,
+                        email,
+                        githubToken: accessToken,
+                        status: "active"
+                    },
+                    { new: true }
+                );
+            } else {
+                user = await User.findOneAndUpdate(
+                    { githubId: id.toString() },
+                    {
+                        username: login,
+                        avatarUrl: avatar_url,
+                        email,
+                        githubToken: accessToken,
+                        status: "active"
+                    },
+                    {
+                        new: true,
+                        upsert: true,
+                    }
+                );
             }
-        );
+        }
 
         /* ----------------------------------------------------
            4. Generate JWT
@@ -116,12 +149,10 @@ export const githubCallback = async (req, res) => {
         });
 
         /* ----------------------------------------------------
-           6. Redirect to VS Code extension
+           6. Redirect to Web App
         ---------------------------------------------------- */
-        const encodedToken = encodeURIComponent(jwtToken);
-
         res.redirect(
-            `vscode://MKSubrahmanya.codechat/auth?token=${encodedToken}`
+            `${process.env.CLIENT_URL}/home`
         );
 
     } catch (error) {
