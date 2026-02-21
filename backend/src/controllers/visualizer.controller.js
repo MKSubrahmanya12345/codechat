@@ -187,143 +187,466 @@ export const getDependencyGraph = async (req, res) => {
 };
 
 // ==========================================
-// 2. LOCAL ARCHITECTURE VISUALIZER
+// 2. REPO STATS + ARCHITECTURE VISUALIZER
 // ==========================================
-// ... imports and getDependencyGraph remain the same ...
 
-// ==========================================
-// 2. ARCHITECTURE VISUALIZER (Local OR Remote)
-// ==========================================
-export const getAppStructure = async (req, res) => {
+const IGNORED_DIRS = new Set([
+    ".git",
+    "node_modules",
+    "dist",
+    "build",
+    "out",
+    ".next",
+    ".turbo",
+    ".cache",
+    "coverage",
+    ".vscode",
+    ".idea"
+]);
+
+const JS_LIKE_EXTS = new Set([".js", ".jsx", ".ts", ".tsx", ".mjs", ".cjs"]);
+const TEXT_LIKE_EXTS = new Set([
+    ...JS_LIKE_EXTS,
+    ".json",
+    ".md",
+    ".txt",
+    ".yml",
+    ".yaml",
+    ".html",
+    ".css",
+    ".scss",
+    ".py",
+    ".java",
+    ".go",
+    ".rs",
+    ".c",
+    ".cpp",
+    ".h",
+    ".hpp",
+    ".cs",
+    ".php"
+]);
+
+const DEFAULT_MAX_NODES = 400;
+const DEFAULT_REMOTE_DEPTH = 3;
+const MAX_FILE_BYTES_TO_PARSE = 1024 * 1024; // 1MB
+
+const toPosixPath = (p) => p.split(path.sep).join("/");
+
+const safeRepoRelative = (repoDir, absPath) => {
+    const rel = path.relative(repoDir, absPath);
+    const norm = toPosixPath(rel);
+    if (!norm || norm.startsWith("..")) return null;
+    return norm;
+};
+
+const inc = (obj, key) => {
+    obj[key] = (obj[key] || 0) + 1;
+};
+
+const isProbablyTextFile = (filePath) => {
+    const ext = path.extname(filePath).toLowerCase();
+    return TEXT_LIKE_EXTS.has(ext);
+};
+
+const countLines = (content) => {
+    if (!content) return 0;
+    let lines = 1;
+    for (let i = 0; i < content.length; i++) {
+        if (content[i] === "\n") lines++;
+    }
+    return lines;
+};
+
+const walkDir = (dir, onEntry) => {
+    const entries = fs.readdirSync(dir, { withFileTypes: true });
+    for (const ent of entries) {
+        if (ent.isDirectory() && IGNORED_DIRS.has(ent.name)) continue;
+        const abs = path.join(dir, ent.name);
+        onEntry(ent, abs);
+        if (ent.isDirectory()) {
+            walkDir(abs, onEntry);
+        }
+    }
+};
+
+const extractJsImports = (code) => {
+    const imports = [];
+
+    let ast;
     try {
-        const { owner, repo, repoName } = req.query;
-        const targetRepo = repo || repoName;
-        
-        const nodes = [];
-        const edges = [];
-        let idCounter = 0;
+        ast = parse(code, {
+            sourceType: "unambiguous",
+            plugins: ["typescript", "jsx", "dynamicImport"]
+        });
+    } catch {
+        return imports;
+    }
 
-        const addNode = (label, type, code = "", parentId = null) => {
-            const id = `node-${idCounter++}`;
-            nodes.push({
-                id, type, data: { label, code }, position: { x: 0, y: 0 }, parentNode: parentId
-            });
-            return id;
-        };
+    traverseFn(ast, {
+        ImportDeclaration(p) {
+            const v = p.node.source?.value;
+            if (typeof v === "string") imports.push(v);
+        },
+        ExportNamedDeclaration(p) {
+            const v = p.node.source?.value;
+            if (typeof v === "string") imports.push(v);
+        },
+        ExportAllDeclaration(p) {
+            const v = p.node.source?.value;
+            if (typeof v === "string") imports.push(v);
+        },
+        CallExpression(p) {
+            const callee = p.node.callee;
+            const args = p.node.arguments;
 
-        // --- MODE A: REMOTE GITHUB REPO ---
-        if (owner && targetRepo) {
-            console.log(`Analyzing Remote Repo: ${owner}/${targetRepo}`);
-            const user = await User.findById(req.user._id);
-            
-            // 1. Get File Tree (Recursive)
-            const treeUrl = `https://api.github.com/repos/${owner}/${targetRepo}/git/trees/main?recursive=1`;
-            let treeData;
-            
+            // require('...')
+            if (callee?.type === "Identifier" && callee.name === "require") {
+                const arg0 = args?.[0];
+                if (arg0?.type === "StringLiteral") imports.push(arg0.value);
+            }
+        },
+        Import(p) {
+            // import('...') dynamic import
+            const parent = p.parentPath?.node;
+            const arg0 = parent?.arguments?.[0];
+            if (arg0?.type === "StringLiteral") imports.push(arg0.value);
+        }
+    });
+
+    return imports;
+};
+
+const resolveRelativeImport = (fromAbsFile, spec) => {
+    if (!spec || typeof spec !== "string") return null;
+    if (!spec.startsWith(".")) return null;
+
+    const baseDir = path.dirname(fromAbsFile);
+    const rawTarget = path.resolve(baseDir, spec);
+
+    const ext = path.extname(rawTarget);
+    const candidates = [];
+
+    if (ext) {
+        candidates.push(rawTarget);
+    } else {
+        for (const e of JS_LIKE_EXTS) {
+            candidates.push(rawTarget + e);
+        }
+        for (const e of JS_LIKE_EXTS) {
+            candidates.push(path.join(rawTarget, "index" + e));
+        }
+    }
+
+    for (const c of candidates) {
+        try {
+            if (fs.existsSync(c) && fs.statSync(c).isFile()) return c;
+        } catch {
+            // ignore
+        }
+    }
+
+    return null;
+};
+
+const buildLocalImportGraph = (repoDir, { maxNodes }) => {
+    const stats = {
+        source: "local",
+        totalFiles: 0,
+        totalDirs: 0,
+        totalLines: 0,
+        extensionCounts: {},
+        truncated: false,
+        note: null
+    };
+
+    const nodesById = new Map();
+    const edges = [];
+    let edgeCounter = 0;
+
+    const ensureNode = (relPath) => {
+        if (nodesById.has(relPath)) return;
+        if (nodesById.size >= maxNodes) {
+            stats.truncated = true;
+            return;
+        }
+
+        nodesById.set(relPath, {
+            id: relPath,
+            type: "default",
+            data: { label: relPath },
+            position: { x: 0, y: 0 },
+            style: {
+                background: "#111",
+                color: "white",
+                border: "1px solid rgba(255,255,255,0.15)",
+                width: 260,
+                fontSize: "11px"
+            }
+        });
+    };
+
+    const jsFiles = [];
+
+    walkDir(repoDir, (ent, abs) => {
+        if (ent.isDirectory()) {
+            stats.totalDirs++;
+            return;
+        }
+        if (!ent.isFile()) return;
+
+        stats.totalFiles++;
+        const ext = path.extname(ent.name).toLowerCase() || "(none)";
+        inc(stats.extensionCounts, ext);
+
+        if (isProbablyTextFile(abs)) {
             try {
-                const treeRes = await axios.get(treeUrl, {
-                    headers: { Authorization: `Bearer ${user.githubToken}` }
-                });
-                treeData = treeRes.data.tree;
-            } catch (e) {
-                // Fallback for 'master' branch if 'main' fails
-                const masterUrl = `https://api.github.com/repos/${owner}/${targetRepo}/git/trees/master?recursive=1`;
-                const masterRes = await axios.get(masterUrl, {
-                    headers: { Authorization: `Bearer ${user.githubToken}` }
-                });
-                treeData = masterRes.data.tree;
-            }
-
-            // 2. Find Route Files
-            const routeFiles = treeData.filter(f => f.path.includes("routes/") && f.path.endsWith(".js"));
-
-            for (const file of routeFiles) {
-                // Fetch Route Content
-                const contentRes = await axios.get(file.url, {
-                    headers: { Authorization: `Bearer ${user.githubToken}` }
-                });
-                const content = Buffer.from(contentRes.data.content, 'base64').toString('utf-8');
-                
-                const fileNodeId = addNode(file.path.split('/').pop(), "file");
-
-                // Parse Routes
-                const routeRegex = /router\.(get|post|put|delete)\s*\(\s*["']([^"']+)["']\s*,\s*([a-zA-Z0-9_]+)/g;
-                let match;
-                
-                while ((match = routeRegex.exec(content)) !== null) {
-                    const [_, method, pathUrl, functionName] = match;
-                    const routeId = addNode(`${method.toUpperCase()} ${pathUrl}`, "route");
-                    edges.push({ id: `e-${idCounter++}`, source: fileNodeId, target: routeId });
-
-                    // Try to find matching Controller
-                    // Heuristic: auth.route.js -> auth.controller.js
-                    const controllerName = file.path.split('/').pop().replace("route", "controller");
-                    const controllerFile = treeData.find(f => f.path.includes("controllers") && f.path.endsWith(controllerName));
-
-                    if (controllerFile) {
-                        const ctrlRes = await axios.get(controllerFile.url, {
-                            headers: { Authorization: `Bearer ${user.githubToken}` }
-                        });
-                        const ctrlContent = Buffer.from(ctrlRes.data.content, 'base64').toString('utf-8');
-                        
-                        const funcRegex = new RegExp(`export const ${functionName} = async \\(req, res\\) => \\{([\\s\\S]*?)\\n\\};`, "m");
-                        const funcMatch = funcRegex.exec(ctrlContent);
-
-                        if (funcMatch) {
-                            const codeSnippet = funcMatch[0];
-                            const codeId = addNode(functionName, "code", codeSnippet);
-                            edges.push({ 
-                                id: `e-${idCounter++}`, source: routeId, target: codeId, 
-                                animated: true, style: { stroke: '#10b981' } 
-                            });
-                        }
-                    }
+                const s = fs.statSync(abs);
+                if (s.size <= MAX_FILE_BYTES_TO_PARSE) {
+                    const content = fs.readFileSync(abs, "utf-8");
+                    stats.totalLines += countLines(content);
                 }
+            } catch {
+                // ignore unreadable
             }
-        } 
-        
-        // --- MODE B: LOCAL FILE SYSTEM (Original Logic) ---
-        else {
-            console.log("Analyzing Local File System");
-            const baseDir = path.join(process.cwd(), "src");
-            const routesDir = path.join(baseDir, "routes");
-            
-            if (fs.existsSync(routesDir)) {
-                const routeFiles = fs.readdirSync(routesDir);
-                for (const file of routeFiles) {
-                    if (!file.endsWith(".route.js")) continue;
-                    const content = fs.readFileSync(path.join(routesDir, file), "utf-8");
-                    const fileNodeId = addNode(file, "file");
+        }
 
-                    const routeRegex = /router\.(get|post|put|delete)\s*\(\s*["']([^"']+)["']\s*,\s*([a-zA-Z0-9_]+)/g;
-                    let match;
-                    while ((match = routeRegex.exec(content)) !== null) {
-                        const [_, method, pathUrl, functionName] = match;
-                        const routeId = addNode(`${method.toUpperCase()} ${pathUrl}`, "route");
-                        edges.push({ id: `e-${idCounter++}`, source: fileNodeId, target: routeId });
+        const fileExt = path.extname(abs).toLowerCase();
+        if (JS_LIKE_EXTS.has(fileExt)) {
+            jsFiles.push(abs);
+        }
+    });
 
-                        const controllerName = file.replace(".route.js", ".controller.js");
-                        const controllerPath = path.join(baseDir, "controllers", controllerName);
-                        if (fs.existsSync(controllerPath)) {
-                            const ctrlContent = fs.readFileSync(controllerPath, "utf-8");
-                            const funcRegex = new RegExp(`export const ${functionName} = async \\(req, res\\) => \\{([\\s\\S]*?)\\n\\};`, "m");
-                            const funcMatch = funcRegex.exec(ctrlContent);
-                            if (funcMatch) {
-                                const codeId = addNode(functionName, "code", funcMatch[0]);
-                                edges.push({ 
-                                    id: `e-${idCounter++}`, source: routeId, target: codeId, 
-                                    animated: true, style: { stroke: '#10b981' } 
-                                });
-                            }
-                        }
-                    }
+    // If repo is huge, avoid blowing up: only graph the first N JS/TS files.
+    // Stats still cover the whole repo.
+    const maxJsFilesToGraph = Math.max(50, Math.min(jsFiles.length, maxNodes));
+    const jsToGraph = jsFiles.slice(0, maxJsFilesToGraph);
+
+    if (jsFiles.length > jsToGraph.length) {
+        stats.note = `Graph limited to first ${jsToGraph.length} JS/TS files (repo has ${jsFiles.length}). Pull specific files for deeper graphs.`;
+    }
+
+    for (const absFile of jsToGraph) {
+        const fromRel = safeRepoRelative(repoDir, absFile);
+        if (!fromRel) continue;
+
+        ensureNode(fromRel);
+        if (!nodesById.has(fromRel)) continue;
+
+        let content;
+        try {
+            const s = fs.statSync(absFile);
+            if (s.size > MAX_FILE_BYTES_TO_PARSE) continue;
+            content = fs.readFileSync(absFile, "utf-8");
+        } catch {
+            continue;
+        }
+
+        const imports = extractJsImports(content);
+        for (const spec of imports) {
+            const resolved = resolveRelativeImport(absFile, spec);
+            if (!resolved) continue;
+
+            const toRel = safeRepoRelative(repoDir, resolved);
+            if (!toRel) continue;
+
+            ensureNode(toRel);
+            if (!nodesById.has(toRel)) continue;
+
+            edges.push({
+                id: `e-${edgeCounter++}`,
+                source: fromRel,
+                target: toRel,
+                animated: false,
+                style: { stroke: "#10b981" }
+            });
+        }
+    }
+
+    return {
+        nodes: Array.from(nodesById.values()),
+        edges,
+        stats: {
+            ...stats,
+            graphNodes: nodesById.size,
+            graphEdges: edges.length
+        }
+    };
+};
+
+const buildRemoteTreeGraph = async (owner, repoName, githubToken, { maxNodes, depth }) => {
+    const headers = {
+        Authorization: `Bearer ${githubToken}`,
+        Accept: "application/vnd.github+json",
+        "X-GitHub-Api-Version": "2022-11-28"
+    };
+
+    // 1) resolve default branch (fixes hard-coded main/master)
+    const repoRes = await axios.get(`https://api.github.com/repos/${owner}/${repoName}`, { headers });
+    const defaultBranch = repoRes.data?.default_branch || "main";
+
+    // 2) fetch tree
+    let tree = [];
+    try {
+        const treeRes = await axios.get(
+            `https://api.github.com/repos/${owner}/${repoName}/git/trees/${encodeURIComponent(defaultBranch)}?recursive=1`,
+            { headers }
+        );
+        tree = treeRes.data?.tree || [];
+    } catch (e) {
+        // Empty repos can return 409 (Git repository is empty)
+        const status = e?.response?.status;
+        if (status === 409) {
+            tree = [];
+        } else {
+            throw e;
+        }
+    }
+
+    const stats = {
+        source: "github",
+        defaultBranch,
+        totalFiles: 0,
+        totalDirs: 0,
+        totalLines: null,
+        extensionCounts: {},
+        truncated: false,
+        note: "Remote mode uses GitHub tree data (no full file parsing). Pull repo locally for an import graph." 
+    };
+
+    // Count full repo stats first (independent of graph depth)
+    for (const item of tree) {
+        if (!item?.path || (item.type !== "tree" && item.type !== "blob")) continue;
+        if (item.type === "tree") {
+            stats.totalDirs++;
+        } else {
+            stats.totalFiles++;
+            const ext = path.extname(item.path).toLowerCase() || "(none)";
+            inc(stats.extensionCounts, ext);
+        }
+    }
+
+    const nodesById = new Map();
+    const edgesById = new Map();
+
+    const ensureNode = (id, label, kind) => {
+        if (nodesById.has(id)) return;
+        if (nodesById.size >= maxNodes) {
+            stats.truncated = true;
+            return;
+        }
+
+        const bg = kind === "dir" ? "#1f2937" : "#111";
+        nodesById.set(id, {
+            id,
+            type: "default",
+            data: { label },
+            position: { x: 0, y: 0 },
+            style: {
+                background: bg,
+                color: "white",
+                border: "1px solid rgba(255,255,255,0.15)",
+                width: 260,
+                fontSize: "11px"
+            }
+        });
+    };
+
+    const ensureEdge = (source, target) => {
+        const id = `e:${source}->${target}`;
+        if (edgesById.has(id)) return;
+        edgesById.set(id, {
+            id,
+            source,
+            target,
+            animated: false,
+            style: { stroke: "#3b82f6" }
+        });
+    };
+
+    const depthLimit = Math.max(1, Number(depth) || DEFAULT_REMOTE_DEPTH);
+
+    for (const item of tree) {
+        if (!item?.path || (item.type !== "tree" && item.type !== "blob")) continue;
+
+        const parts = String(item.path).split("/");
+        if (parts.length > depthLimit) continue;
+
+        // Add all prefixes so the graph is connected
+        let prefix = "";
+        for (let i = 0; i < parts.length; i++) {
+            const isLeaf = i === parts.length - 1;
+            const kind = isLeaf ? (item.type === "tree" ? "dir" : "file") : "dir";
+            prefix = prefix ? `${prefix}/${parts[i]}` : parts[i];
+
+            ensureNode(prefix, parts[i], kind === "dir" ? "dir" : "file");
+            if (i > 0) {
+                const parent = parts.slice(0, i).join("/");
+                if (nodesById.has(parent) && nodesById.has(prefix)) {
+                    ensureEdge(parent, prefix);
                 }
             }
         }
 
-        res.json({ nodes, edges });
+        if (stats.truncated) break;
+    }
+
+    return {
+        nodes: Array.from(nodesById.values()),
+        edges: Array.from(edgesById.values()),
+        stats: {
+            ...stats,
+            graphNodes: nodesById.size,
+            graphEdges: edgesById.size
+        }
+    };
+};
+
+export const getAppStructure = async (req, res) => {
+    try {
+        const { owner, repo, repoName, maxNodes, depth } = req.query;
+        const targetRepo = repo || repoName;
+
+        const user = await User.findById(req.user._id);
+        if (!user || !user.githubToken) {
+            return res.status(401).json({ error: "No GitHub token. Please login again." });
+        }
+
+        const maxNodesNum = Math.max(50, Math.min(Number(maxNodes) || DEFAULT_MAX_NODES, 1200));
+
+        // If owner/repo are provided, prefer a local clone (deep parsing), else fall back to GitHub tree (stats only).
+        if (owner && targetRepo) {
+            const basePath = user?.repoBasePath || DEFAULT_REPO_BASE_PATH;
+            const repoDir = getRepoDir(basePath, String(owner), String(targetRepo));
+
+            if (fs.existsSync(repoDir)) {
+                return res.json(buildLocalImportGraph(repoDir, { maxNodes: maxNodesNum }));
+            }
+
+            const remote = await buildRemoteTreeGraph(String(owner), String(targetRepo), user.githubToken, {
+                maxNodes: maxNodesNum,
+                depth
+            });
+            return res.json(remote);
+        }
+
+        // Fallback: analyze the backend project itself (useful for debugging)
+        const localBase = path.join(process.cwd(), "src");
+        if (!fs.existsSync(localBase)) {
+            return res.json({ nodes: [], edges: [], stats: { source: "local", totalFiles: 0, totalDirs: 0, totalLines: 0 } });
+        }
+        return res.json(buildLocalImportGraph(localBase, { maxNodes: maxNodesNum }));
 
     } catch (error) {
+        const status = error?.response?.status;
+        const gh = error?.response?.data;
+
+        if (status) {
+            return res.status(status).json({
+                error: gh?.message || "Failed to visualize repository",
+            });
+        }
+
         console.error("Visualizer Error:", error.message);
         res.status(500).json({ error: "Failed to visualize architecture: " + error.message });
     }

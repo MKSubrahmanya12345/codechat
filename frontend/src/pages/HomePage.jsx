@@ -3,7 +3,7 @@ import { useAuthStore } from "../store/authUser";
 import { 
     LogOut, Star, GitFork, MessageSquare, ArrowLeft, Send, Search, 
     Folder, FileCode, Users, Hash, ChevronLeft, Bell, Plus, Check, 
-    Paperclip, X, MoreVertical, Share2, Network, Copy, FolderSync, Upload, Settings, Code2
+    Paperclip, X, MoreVertical, Share2, Network, Copy, FolderSync, Upload, Settings, Code2, Github
 } from "lucide-react";
 import axios from "axios";
 import io from "socket.io-client";
@@ -14,6 +14,17 @@ import { Link } from "react-router-dom"; // Import Link
 
 const socket = io("http://localhost:5000");
 const DEFAULT_REPO_BASE_PATH = "C:\\Users\\User\\Repo";
+
+const getRepoOwnerLogin = (repo) => {
+    const owner = repo?.owner;
+    if (owner && typeof owner === "object") return owner.login || "";
+    if (typeof owner === "string") return owner;
+    return "";
+};
+
+const getRepoNameSafe = (repo) => {
+    return typeof repo?.name === "string" ? repo.name : "";
+};
 
 // ================= 1. FILE EXPLORER COMPONENT =================
 // ================= 1. FILE EXPLORER COMPONENT =================
@@ -27,7 +38,7 @@ const FileExplorer = ({ repo, onPullRepo, onOpenFile }) => {
     const [saving, setSaving] = useState(false);
 
     // Helper to get owner string safely
-    const getOwner = () => typeof repo.owner === 'object' ? repo.owner.login : repo.owner;
+    const getOwner = () => getRepoOwnerLogin(repo);
     const fetchFiles = async (path = "") => {
         setLoading(true);
         try {
@@ -503,10 +514,10 @@ const RepoTabs = ({ repo, setShowInviteModal, presenceRoster, onPullRepo, onOpen
                             <div className="flex items-center justify-between bg-[#1A1A1A] p-3 rounded-lg border border-white/5">
                                 <div className="flex items-center gap-3">
                                     <div className="w-8 h-8 rounded-full bg-emerald-900/50 flex items-center justify-center text-emerald-400 font-bold border border-emerald-500/20">
-                                        {(typeof repo.owner === 'object' ? repo.owner.login : repo.owner)[0].toUpperCase()}
+                                        {(getRepoOwnerLogin(repo)?.[0] || "?").toUpperCase()}
                                     </div>
                                     <div>
-                                        <p className="font-bold text-sm text-white">{typeof repo.owner === 'object' ? repo.owner.login : repo.owner}</p>
+                                        <p className="font-bold text-sm text-white">{getRepoOwnerLogin(repo) || "unknown"}</p>
                                         <span className="text-[10px] bg-emerald-500/20 text-emerald-400 px-1.5 py-0.5 rounded">OWNER</span>
                                     </div>
                                 </div>
@@ -555,16 +566,82 @@ const HomePage = () => {
     const [showCommitModal, setShowCommitModal] = useState(false);
     const [commitMessage, setCommitMessage] = useState("");
 
+    const [dataError, setDataError] = useState("");
+
+    // Create Repo States
+    const [showCreateRepoModal, setShowCreateRepoModal] = useState(false);
+    const [createRepoLoading, setCreateRepoLoading] = useState(false);
+    const [createRepoAdvanced, setCreateRepoAdvanced] = useState(false);
+    const [createRepoError, setCreateRepoError] = useState("");
+    const [newRepo, setNewRepo] = useState({
+        ownerType: "user", // 'user' | 'org'
+        org: "",
+        name: "",
+        description: "",
+        homepage: "",
+        visibility: "public", // 'public' | 'private' | 'internal'
+
+        auto_init: true,
+        gitignore_template: "",
+        license_template: "",
+        is_template: false,
+
+        has_issues: true,
+        has_projects: true,
+        has_wiki: false,
+        has_discussions: false,
+
+        allow_squash_merge: true,
+        allow_merge_commit: true,
+        allow_rebase_merge: true,
+        delete_branch_on_merge: false,
+
+        // Optional template repo generation
+        template_owner: "",
+        template_repo: "",
+        include_all_branches: false
+    });
+
     // 1. Fetch Repos & Invites
+    // ✅ Important: do not let one failing request blank out everything.
     const fetchData = async () => {
+        setDataError("");
+
+        let nextRepos = [];
+        let nextInvites = [];
+
         try {
-            const [repoRes, inviteRes] = await Promise.all([
-                axios.get("http://localhost:5000/api/repos"),
-                axios.get("http://localhost:5000/api/invites/mine")
-            ]);
-            setRepos(repoRes.data);
-            setInvites(inviteRes.data);
-        } catch (error) { console.error(error); }
+            const repoRes = await axios.get("http://localhost:5000/api/repos");
+            const raw = repoRes.data || [];
+
+            // Dedupe by id (protects UI even if backend returns duplicates)
+            const seen = new Set();
+            nextRepos = [];
+            for (const r of raw) {
+                const key = r?.id !== undefined ? String(r.id) : "";
+                if (!key) continue;
+                if (seen.has(key)) continue;
+                seen.add(key);
+                nextRepos.push(r);
+            }
+        } catch (error) {
+            console.error("Repo fetch failed", error);
+            setDataError(prev => prev || (error?.response?.data?.error || "Failed to fetch repositories"));
+            nextRepos = [];
+        }
+
+        try {
+            const inviteRes = await axios.get("http://localhost:5000/api/invites/mine");
+            nextInvites = inviteRes.data || [];
+        } catch (error) {
+            console.error("Invite fetch failed", error);
+            setDataError(prev => prev || (error?.response?.data?.error || "Failed to fetch invites"));
+            nextInvites = [];
+        }
+
+        setRepos(nextRepos);
+        setInvites(nextInvites);
+        return { repos: nextRepos, invites: nextInvites };
     };
 
     useEffect(() => { fetchData(); }, []);
@@ -587,9 +664,18 @@ const HomePage = () => {
         if (!pendingToken) return;
 
         axios.get(`http://localhost:5000/api/invites/accept/${pendingToken}`)
-            .then(() => {
+            .then((res) => {
+                const repoId = res.data?.repoId;
+                if (repoId) localStorage.setItem("lastSelectedRepoId", String(repoId));
+
                 localStorage.removeItem("pendingInviteToken");
-                fetchData();
+                return fetchData();
+            })
+            .then(({ repos }) => {
+                const repoId = localStorage.getItem("lastSelectedRepoId");
+                if (!repoId) return;
+                const found = repos.find(r => String(r.id) === String(repoId));
+                if (found) setSelectedRepo(found);
             })
             .catch(() => {});
     }, [authUser]);
@@ -636,19 +722,37 @@ const HomePage = () => {
 
     const handleAcceptInvite = async (inviteId) => {
         try {
-            await axios.post("http://localhost:5000/api/invites/accept", { inviteId });
-            fetchData(); // Refresh repos
+            const res = await axios.post("http://localhost:5000/api/invites/accept", { inviteId });
+
+            const repoId = res.data?.repoId;
+            if (repoId) localStorage.setItem("lastSelectedRepoId", String(repoId));
+
+            const { repos } = await fetchData(); // Refresh repos
             setShowInvites(false);
-        } catch (error) { console.error("Accept failed"); }
+
+            if (repoId) {
+                const found = repos.find(r => String(r.id) === String(repoId));
+                if (found) setSelectedRepo(found);
+            }
+        } catch (error) {
+            console.error("Accept failed");
+        }
     };
 
     const handleSendInvite = async () => {
         try {
+            const ownerLogin = getRepoOwnerLogin(selectedRepo);
+            const repoName = getRepoNameSafe(selectedRepo);
+            if (!ownerLogin || !repoName) {
+                alert("Repo metadata missing (owner/name). Try refreshing repos.");
+                return;
+            }
+
             const res = await axios.post("http://localhost:5000/api/invites/send", {
                 receiverUsername: inviteUsername,
                 repoId: selectedRepo.id,
-                repoName: selectedRepo.name,
-                repoOwner: typeof selectedRepo.owner === 'object' ? selectedRepo.owner.login : selectedRepo.owner
+                repoName,
+                repoOwner: ownerLogin
             });
             setInviteLink(res.data?.inviteLink || "");
             alert("Invite sent! Copy the invite link below.");
@@ -673,9 +777,15 @@ const HomePage = () => {
                 await axios.post("http://localhost:5000/api/user/repo-path", { repoBasePath: basePathToUse });
                 setRepoBasePath(basePathToUse);
             }
+            const ownerLogin = getRepoOwnerLogin(selectedRepo);
+            const repoName = getRepoNameSafe(selectedRepo);
+            if (!ownerLogin || !repoName) {
+                alert("Repo metadata missing (owner/name). Try refreshing repos.");
+                return;
+            }
             await axios.post("http://localhost:5000/api/repos/pull", {
-                owner: typeof selectedRepo.owner === 'object' ? selectedRepo.owner.login : selectedRepo.owner,
-                repoName: selectedRepo.name
+                owner: ownerLogin,
+                repoName
             });
             alert("Repo pulled!");
         } catch (e) {
@@ -695,9 +805,15 @@ const HomePage = () => {
                 setRepoBasePath(basePathToUse);
             }
             const message = commitMessage || "";
+            const ownerLogin = getRepoOwnerLogin(selectedRepo);
+            const repoName = getRepoNameSafe(selectedRepo);
+            if (!ownerLogin || !repoName) {
+                alert("Repo metadata missing (owner/name). Try refreshing repos.");
+                return;
+            }
             await axios.post("http://localhost:5000/api/repos/push", {
-                owner: typeof selectedRepo.owner === 'object' ? selectedRepo.owner.login : selectedRepo.owner,
-                repoName: selectedRepo.name,
+                owner: ownerLogin,
+                repoName,
                 commitMessage: message
             });
             alert("Push complete.");
@@ -708,9 +824,86 @@ const HomePage = () => {
         }
     };
 
+    const handleCreateRepo = async () => {
+        const repoName = String(newRepo.name || "").trim();
+        const org = String(newRepo.org || "").trim();
+
+        setCreateRepoError("");
+
+        if (!repoName) {
+            setCreateRepoError("Repository name is required");
+            return;
+        }
+        if (repoName.length > 100) {
+            setCreateRepoError("Repository name is too long (max 100 chars)");
+            return;
+        }
+        if (!/^[A-Za-z0-9_.-]+$/.test(repoName)) {
+            setCreateRepoError("Invalid repository name (no spaces). Use letters, numbers, '.', '_' or '-'.");
+            return;
+        }
+        if (newRepo.ownerType === "org" && !org) {
+            setCreateRepoError("Organization name is required");
+            return;
+        }
+        if (newRepo.visibility === "internal" && newRepo.ownerType !== "org") {
+            setCreateRepoError("Internal visibility is only available for organization repos");
+            return;
+        }
+
+        try {
+            setCreateRepoLoading(true);
+
+            const payload = {
+                ...newRepo,
+                name: repoName,
+                org
+            };
+
+            const res = await axios.post("http://localhost:5000/api/repos/create", payload);
+            const created = res.data?.repo;
+
+            setShowCreateRepoModal(false);
+            setCreateRepoAdvanced(false);
+            setCreateRepoError("");
+
+            // Refresh repos and auto-select the created one
+            const { repos } = await fetchData();
+            const found = created?.id
+                ? repos.find(r => String(r.id) === String(created.id))
+                : repos.find(r => r.name === repoName);
+
+            if (found) {
+                localStorage.setItem("lastSelectedRepoId", String(found.id));
+                setSelectedRepo(found);
+            }
+
+        } catch (e) {
+            const msg = e?.response?.data?.error || "Failed to create repository";
+            setCreateRepoError(msg);
+        } finally {
+            setCreateRepoLoading(false);
+        }
+    };
+
     const sendToExtension = (message) => {
         if (window.parent !== window) {
             window.parent.postMessage(message, "*");
+        }
+    };
+
+    const startGithubLogin = ({ promptLogin = false } = {}) => {
+        const promptParam = promptLogin ? "prompt=login" : "";
+
+        if (window.parent !== window) {
+            // VS Code: include source=vscode so backend deep-links back into VS Code
+            const qs = ["source=vscode", promptParam].filter(Boolean).join("&");
+            const url = `http://localhost:5000/api/auth/github?${qs}`;
+            sendToExtension({ command: 'loginGithub', url });
+        } else {
+            // Web: normal OAuth redirect back to the SPA
+            const qs = [promptParam].filter(Boolean).join("&");
+            window.location.href = `http://localhost:5000/api/auth/github${qs ? `?${qs}` : ""}`;
         }
     };
 
@@ -735,7 +928,7 @@ const HomePage = () => {
         } catch (e) {}
     };
 
-    const filteredRepos = repos.filter(repo => repo.name.toLowerCase().includes(searchQuery.toLowerCase()));
+    const filteredRepos = repos.filter(repo => getRepoNameSafe(repo).toLowerCase().includes(searchQuery.toLowerCase()));
 
     return (
         <div className="min-h-screen bg-[#0C0C0C] text-white p-4 md:p-8 font-sans">
@@ -772,9 +965,323 @@ const HomePage = () => {
                         <button onClick={() => setShowRepoPathModal(true)} className="p-2 hover:bg-white/10 rounded-full text-gray-400 hover:text-white">
                             <Settings size={18} />
                         </button>
-                        <button onClick={logout} className="text-gray-500 hover:text-red-400"><LogOut size={20} /></button>
+                        <button
+                            onClick={() => {
+                                setNewRepo({
+                                    ownerType: "user",
+                                    org: "",
+                                    name: "",
+                                    description: "",
+                                    homepage: "",
+                                    visibility: "public",
+
+                                    auto_init: true,
+                                    gitignore_template: "",
+                                    license_template: "",
+                                    is_template: false,
+
+                                    has_issues: true,
+                                    has_projects: true,
+                                    has_wiki: false,
+                                    has_discussions: false,
+
+                                    allow_squash_merge: true,
+                                    allow_merge_commit: true,
+                                    allow_rebase_merge: true,
+                                    delete_branch_on_merge: false,
+
+                                    template_owner: "",
+                                    template_repo: "",
+                                    include_all_branches: false
+                                });
+                                setCreateRepoError("");
+                                setCreateRepoAdvanced(false);
+                                setShowCreateRepoModal(true);
+                            }}
+                            className="p-2 hover:bg-white/10 rounded-full text-gray-400 hover:text-white"
+                            title="Create a new GitHub repository"
+                        >
+                            <Plus size={18} />
+                        </button>
+                        <button
+                            onClick={async () => {
+                                await logout();
+                                // force GitHub to show account picker / login screen
+                                startGithubLogin({ promptLogin: true });
+                            }}
+                            className="p-2 hover:bg-white/10 rounded-full text-gray-400 hover:text-white"
+                            title="Switch GitHub account"
+                        >
+                            <Github size={18} />
+                        </button>
+                        <button onClick={logout} className="text-gray-500 hover:text-red-400" title="Log out"><LogOut size={20} /></button>
                     </div>
                 </div>
+
+                {showCreateRepoModal && (
+                    <div className="fixed inset-0 bg-black/80 z-50 flex items-center justify-center p-4 backdrop-blur-sm">
+                        <div className="bg-[#1A1A1A] p-6 rounded-xl border border-white/10 w-full max-w-lg">
+                            <div className="flex items-center justify-between mb-4">
+                                <h3 className="text-lg font-bold">Create a new repository</h3>
+                                <button
+                                    onClick={() => { setShowCreateRepoModal(false); setCreateRepoError(""); }}
+                                    className="text-gray-400 hover:text-white"
+                                >
+                                    <X size={18} />
+                                </button>
+                            </div>
+
+                            {createRepoError && (
+                                <div className="mb-3 text-xs text-red-400 bg-red-500/10 border border-red-500/20 rounded-lg p-2">
+                                    {createRepoError}
+                                </div>
+                            )}
+
+                            <div className="space-y-3">
+                                <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                                    <div>
+                                        <div className="text-[11px] text-gray-400 mb-1">Owner</div>
+                                        <select
+                                            value={newRepo.ownerType}
+                                            onChange={(e) => {
+                                                const ownerType = e.target.value;
+                                                setNewRepo(prev => ({ ...prev, ownerType, org: ownerType === "org" ? prev.org : "" }));
+                                            }}
+                                            className="w-full bg-[#0C0C0C] border border-white/10 rounded-lg p-2 text-sm text-white outline-none"
+                                        >
+                                            <option value="user">Personal ({authUser?.username})</option>
+                                            <option value="org">Organization</option>
+                                        </select>
+                                    </div>
+
+                                    {newRepo.ownerType === "org" ? (
+                                        <div>
+                                            <div className="text-[11px] text-gray-400 mb-1">Organization name</div>
+                                            <input
+                                                type="text"
+                                                placeholder="my-org"
+                                                className="w-full bg-[#0C0C0C] border border-white/10 rounded-lg p-2 text-sm text-white outline-none"
+                                                value={newRepo.org}
+                                                onChange={(e) => setNewRepo(prev => ({ ...prev, org: e.target.value }))}
+                                            />
+                                        </div>
+                                    ) : (
+                                        <div />
+                                    )}
+                                </div>
+
+                                <div>
+                                    <div className="text-[11px] text-gray-400 mb-1">Repository name</div>
+                                    <input
+                                        autoFocus
+                                        type="text"
+                                        placeholder="my-new-repo"
+                                        className="w-full bg-[#0C0C0C] border border-white/10 rounded-lg p-3 text-sm text-white outline-none"
+                                        value={newRepo.name}
+                                        onChange={(e) => setNewRepo(prev => ({ ...prev, name: e.target.value }))}
+                                    />
+                                    <div className="text-[10px] text-gray-500 mt-1">Allowed: letters, numbers, '.', '_' and '-'</div>
+                                </div>
+
+                                <div>
+                                    <div className="text-[11px] text-gray-400 mb-1">Description (optional)</div>
+                                    <input
+                                        type="text"
+                                        placeholder="What is this repo for?"
+                                        className="w-full bg-[#0C0C0C] border border-white/10 rounded-lg p-3 text-sm text-white outline-none"
+                                        value={newRepo.description}
+                                        onChange={(e) => setNewRepo(prev => ({ ...prev, description: e.target.value }))}
+                                    />
+                                </div>
+
+                                <div>
+                                    <div className="text-[11px] text-gray-400 mb-2">Visibility</div>
+                                    <div className="flex flex-wrap gap-3">
+                                        <label className="flex items-center gap-2 text-sm text-gray-200 cursor-pointer">
+                                            <input
+                                                type="radio"
+                                                name="repoVisibility"
+                                                checked={newRepo.visibility === "public"}
+                                                onChange={() => setNewRepo(prev => ({ ...prev, visibility: "public" }))}
+                                            />
+                                            Public
+                                        </label>
+                                        <label className="flex items-center gap-2 text-sm text-gray-200 cursor-pointer">
+                                            <input
+                                                type="radio"
+                                                name="repoVisibility"
+                                                checked={newRepo.visibility === "private"}
+                                                onChange={() => setNewRepo(prev => ({ ...prev, visibility: "private" }))}
+                                            />
+                                            Private
+                                        </label>
+                                        {newRepo.ownerType === "org" && (
+                                            <label className="flex items-center gap-2 text-sm text-gray-200 cursor-pointer">
+                                                <input
+                                                    type="radio"
+                                                    name="repoVisibility"
+                                                    checked={newRepo.visibility === "internal"}
+                                                    onChange={() => setNewRepo(prev => ({ ...prev, visibility: "internal" }))}
+                                                />
+                                                Internal
+                                            </label>
+                                        )}
+                                    </div>
+                                </div>
+
+                                <div className="flex flex-wrap gap-4">
+                                    <label className="flex items-center gap-2 text-sm text-gray-200 cursor-pointer">
+                                        <input
+                                            type="checkbox"
+                                            checked={newRepo.auto_init === true}
+                                            onChange={(e) => setNewRepo(prev => ({ ...prev, auto_init: e.target.checked }))}
+                                        />
+                                        Initialize with README
+                                    </label>
+
+                                    <button
+                                        type="button"
+                                        onClick={() => setCreateRepoAdvanced(v => !v)}
+                                        className="text-xs text-emerald-400 hover:text-emerald-300 underline"
+                                    >
+                                        {createRepoAdvanced ? "Hide advanced" : "Show advanced"}
+                                    </button>
+                                </div>
+
+                                {createRepoAdvanced && (
+                                    <div className="mt-2 border border-white/10 rounded-lg p-3 space-y-3 bg-black/20">
+                                        <div>
+                                            <div className="text-[11px] text-gray-400 mb-1">Homepage (optional)</div>
+                                            <input
+                                                type="text"
+                                                placeholder="https://example.com"
+                                                className="w-full bg-[#0C0C0C] border border-white/10 rounded-lg p-2 text-sm text-white outline-none"
+                                                value={newRepo.homepage}
+                                                onChange={(e) => setNewRepo(prev => ({ ...prev, homepage: e.target.value }))}
+                                            />
+                                        </div>
+
+                                        <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                                            <div>
+                                                <div className="text-[11px] text-gray-400 mb-1">.gitignore template (optional)</div>
+                                                <input
+                                                    type="text"
+                                                    placeholder="Node"
+                                                    className="w-full bg-[#0C0C0C] border border-white/10 rounded-lg p-2 text-sm text-white outline-none"
+                                                    value={newRepo.gitignore_template}
+                                                    onChange={(e) => setNewRepo(prev => ({ ...prev, gitignore_template: e.target.value }))}
+                                                />
+                                            </div>
+                                            <div>
+                                                <div className="text-[11px] text-gray-400 mb-1">License template (optional)</div>
+                                                <input
+                                                    type="text"
+                                                    placeholder="mit"
+                                                    className="w-full bg-[#0C0C0C] border border-white/10 rounded-lg p-2 text-sm text-white outline-none"
+                                                    value={newRepo.license_template}
+                                                    onChange={(e) => setNewRepo(prev => ({ ...prev, license_template: e.target.value }))}
+                                                />
+                                            </div>
+                                        </div>
+
+                                        <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                                            <label className="flex items-center gap-2 text-sm text-gray-200 cursor-pointer">
+                                                <input
+                                                    type="checkbox"
+                                                    checked={newRepo.has_issues === true}
+                                                    onChange={(e) => setNewRepo(prev => ({ ...prev, has_issues: e.target.checked }))}
+                                                />
+                                                Issues
+                                            </label>
+                                            <label className="flex items-center gap-2 text-sm text-gray-200 cursor-pointer">
+                                                <input
+                                                    type="checkbox"
+                                                    checked={newRepo.has_projects === true}
+                                                    onChange={(e) => setNewRepo(prev => ({ ...prev, has_projects: e.target.checked }))}
+                                                />
+                                                Projects
+                                            </label>
+                                            <label className="flex items-center gap-2 text-sm text-gray-200 cursor-pointer">
+                                                <input
+                                                    type="checkbox"
+                                                    checked={newRepo.has_wiki === true}
+                                                    onChange={(e) => setNewRepo(prev => ({ ...prev, has_wiki: e.target.checked }))}
+                                                />
+                                                Wiki
+                                            </label>
+                                            <label className="flex items-center gap-2 text-sm text-gray-200 cursor-pointer">
+                                                <input
+                                                    type="checkbox"
+                                                    checked={newRepo.has_discussions === true}
+                                                    onChange={(e) => setNewRepo(prev => ({ ...prev, has_discussions: e.target.checked }))}
+                                                />
+                                                Discussions
+                                            </label>
+                                        </div>
+
+                                        <div className="border-t border-white/10 pt-3">
+                                            <div className="text-[11px] text-gray-400 mb-2">Create from template (optional)</div>
+                                            <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                                                <input
+                                                    type="text"
+                                                    placeholder="template owner"
+                                                    className="w-full bg-[#0C0C0C] border border-white/10 rounded-lg p-2 text-sm text-white outline-none"
+                                                    value={newRepo.template_owner}
+                                                    onChange={(e) => setNewRepo(prev => ({ ...prev, template_owner: e.target.value }))}
+                                                />
+                                                <input
+                                                    type="text"
+                                                    placeholder="template repo"
+                                                    className="w-full bg-[#0C0C0C] border border-white/10 rounded-lg p-2 text-sm text-white outline-none"
+                                                    value={newRepo.template_repo}
+                                                    onChange={(e) => setNewRepo(prev => ({ ...prev, template_repo: e.target.value }))}
+                                                />
+                                            </div>
+                                            <label className="mt-2 flex items-center gap-2 text-sm text-gray-200 cursor-pointer">
+                                                <input
+                                                    type="checkbox"
+                                                    checked={newRepo.include_all_branches === true}
+                                                    onChange={(e) => setNewRepo(prev => ({ ...prev, include_all_branches: e.target.checked }))}
+                                                />
+                                                Include all branches
+                                            </label>
+                                            <div className="text-[10px] text-gray-500 mt-1">
+                                                If both template fields are set, the repo will be generated from that template.
+                                            </div>
+                                        </div>
+                                    </div>
+                                )}
+                            </div>
+
+                            <div className="flex gap-2 mt-5">
+                                <button
+                                    onClick={() => { setShowCreateRepoModal(false); setCreateRepoError(""); }}
+                                    className="flex-1 py-2 bg-gray-800 rounded-lg text-sm"
+                                    disabled={createRepoLoading}
+                                >
+                                    Cancel
+                                </button>
+                                <button
+                                    onClick={handleCreateRepo}
+                                    className="flex-1 py-2 bg-emerald-600 rounded-lg text-sm font-bold disabled:opacity-60"
+                                    disabled={createRepoLoading}
+                                >
+                                    {createRepoLoading ? "Creating..." : "Create"}
+                                </button>
+                            </div>
+
+                            <div className="text-[10px] text-gray-500 mt-2">
+                                Note: Creating private repos requires the OAuth token to have the <span className="text-gray-300">repo</span> scope.
+                            </div>
+                        </div>
+                    </div>
+                )}
+
+                {dataError && (
+                    <div className="mb-4 bg-red-500/10 border border-red-500/20 text-red-300 text-xs rounded-lg p-3">
+                        {dataError}
+                    </div>
+                )}
 
                 {/* Workspace / Grid Switcher */}
                         {selectedRepo ? (
@@ -804,8 +1311,8 @@ const HomePage = () => {
                                     <Upload size={12} /> Push
                                 </button>
                                 {/* 👇 FIX: Pass owner and repo params */}
-                                <Link 
-                                    to={`/architecture?owner=${typeof selectedRepo.owner === 'object' ? selectedRepo.owner.login : selectedRepo.owner}&repo=${selectedRepo.name}`}
+                                    <Link 
+                                    to={`/architecture?owner=${encodeURIComponent(getRepoOwnerLogin(selectedRepo) || "")}&repo=${encodeURIComponent(getRepoNameSafe(selectedRepo) || "")}`}
                                     className="flex items-center gap-2 text-xs bg-purple-500/10 text-purple-400 hover:bg-purple-500/20 px-3 py-1.5 rounded-full border border-purple-500/20"
                                 >
                                     <Network size={12} /> Visualize
@@ -904,8 +1411,23 @@ const HomePage = () => {
                         </div>
                     </div>
                 ) : (
-                    <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-                        {filteredRepos.map((repo) => (
+                    <div>
+                        {filteredRepos.length === 0 ? (
+                            <div className="bg-[#111]/50 border border-white/10 rounded-xl p-8 text-center">
+                                <div className="text-sm font-bold text-gray-200 mb-2">No repositories found</div>
+                                <div className="text-xs text-gray-500 mb-4">
+                                    If you just accepted an invite, try refreshing. Otherwise create a new repo using the + button.
+                                </div>
+                                <button
+                                    onClick={() => fetchData()}
+                                    className="text-xs bg-white/10 hover:bg-white/15 px-3 py-2 rounded"
+                                >
+                                    Refresh
+                                </button>
+                            </div>
+                        ) : (
+                            <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                                {filteredRepos.map((repo) => (
                             <div
                                 key={repo.id}
                                 onClick={() => {
@@ -920,7 +1442,9 @@ const HomePage = () => {
                                 </div>
                                 <p className="text-gray-500 text-xs line-clamp-2 h-8">{repo.description || "No description."}</p>
                             </div>
-                        ))}
+                                ))}
+                            </div>
+                        )}
                     </div>
                 )}
             </div>

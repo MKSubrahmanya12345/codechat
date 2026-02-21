@@ -10,8 +10,7 @@ export const useAuthStore = create((set) => ({
 
     checkAuth: async () => {
         try {
-            // You need to add this route to backend!
-            const res = await axios.get("http://localhost:5000/api/auth/check"); 
+            const res = await axios.get("http://localhost:5000/api/auth/check");
             set({ authUser: res.data });
         } catch (error) {
             set({ authUser: null });
@@ -22,10 +21,19 @@ export const useAuthStore = create((set) => ({
 
     logout: async () => {
         try {
+            // Best-effort server logout (clears cookie)
             await axios.post("http://localhost:5000/api/auth/logout");
-            set({ authUser: null });
         } catch (error) {
+            // Ignore server failures; we still clear client state
             console.log(error);
+        } finally {
+            // ✅ Critical: clear local auth so refresh doesn't auto-login
+            localStorage.removeItem("jwt");
+            localStorage.removeItem("lastSelectedRepoId");
+            localStorage.removeItem("pendingInviteToken");
+
+            delete axios.defaults.headers.common['Authorization'];
+            set({ authUser: null });
         }
     }
 }));

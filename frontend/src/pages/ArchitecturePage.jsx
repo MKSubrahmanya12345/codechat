@@ -50,7 +50,9 @@ const getLayoutedElements = (nodes, edges) => {
     dagreGraph.setGraph({ rankdir: 'BT' }); // Bottom to Top
 
     nodes.forEach((node) => {
-        dagreGraph.setNode(node.id, { width: 180, height: 50 });
+        const width = Number(node?.style?.width) || 180;
+        const height = Number(node?.style?.height) || 50;
+        dagreGraph.setNode(node.id, { width, height });
     });
 
     edges.forEach((edge) => {
@@ -80,6 +82,7 @@ const ArchitecturePage = () => {
     const [searchParams] = useSearchParams();
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState(null);
+    const [stats, setStats] = useState(null);
     const navigate = useNavigate();
 
     const handleBack = () => {
@@ -105,11 +108,15 @@ const ArchitecturePage = () => {
                     // Dependency Mode
                     endpoint = "http://localhost:5000/api/repos/visualize/dependencies";
                     params = { owner, repoName, path };
+                } else if (owner && repoName) {
+                    // ✅ FIX: repo-wide visualization must still pass owner/repoName
+                    params = { owner, repoName };
                 }
 
                 console.log("Fetching:", endpoint, params);
 
                 const res = await axios.get(endpoint, { params });
+                setStats(res.data?.stats || null);
 
                 if (res.data.nodes.length === 0) {
                     setError("No structure found.");
@@ -141,6 +148,30 @@ const ArchitecturePage = () => {
                     <p className="text-xs text-gray-500 font-mono">
                         {searchParams.get("path") || "Global View"}
                     </p>
+                    {stats && !searchParams.get("path") && (
+                        <div className="mt-1 text-[11px] text-gray-500 font-mono">
+                            <span className="text-gray-400">files:</span> {stats.totalFiles ?? "-"} 
+                            <span className="mx-2">|</span>
+                            <span className="text-gray-400">dirs:</span> {stats.totalDirs ?? "-"}
+                            {typeof stats.totalLines === "number" && (
+                                <>
+                                    <span className="mx-2">|</span>
+                                    <span className="text-gray-400">loc:</span> {stats.totalLines}
+                                </>
+                            )}
+                            {stats.truncated && (
+                                <>
+                                    <span className="mx-2">|</span>
+                                    <span className="text-yellow-400">truncated</span>
+                                </>
+                            )}
+                        </div>
+                    )}
+                    {stats?.note && !searchParams.get("path") && (
+                        <div className="mt-1 text-[11px] text-gray-600 font-mono">
+                            {stats.note}
+                        </div>
+                    )}
                 </div>
             </div>
             

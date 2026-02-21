@@ -22,19 +22,49 @@ export const getRepos = async (req, res) => {
         const user = await User.findById(req.user._id);
         if (!user || !user.githubToken) return res.status(401).json({ error: "No Token" });
 
-        // 1. Fetch GitHub Repos
-        const githubRes = await axios.get("https://api.github.com/user/repos?sort=updated&per_page=10", {
-            headers: { Authorization: `Bearer ${user.githubToken}` }
-        });
+        // 1. Fetch GitHub Repos (best-effort)
+        let githubRepos = [];
+        try {
+            const githubRes = await axios.get("https://api.github.com/user/repos?sort=updated&per_page=10", {
+                headers: { Authorization: `Bearer ${user.githubToken}` }
+            });
+            githubRepos = githubRes.data || [];
+        } catch (e) {
+            // If GitHub call fails (bad scope, rate limit, etc), still return shared repos.
+            console.error("GitHub repo list failed:", e?.response?.data || e?.message);
+            githubRepos = [];
+        }
 
         // 2. Get Shared Repos (from DB)
-        const sharedRepos = user.sharedRepos || [];
+        const sharedReposRaw = user.sharedRepos || [];
+
+        // Deduplicate by repoId (fixes double-invite / double-accept issues)
+        const sharedById = new Map();
+        for (const r of sharedReposRaw) {
+            const rid = r?.repoId ? String(r.repoId) : null;
+            if (!rid) continue;
+            sharedById.set(rid, r);
+        }
+        const sharedRepos = Array.from(sharedById.values());
+
+        // Also avoid duplicates if the repo already appears in the user's normal GitHub repos.
+        const githubIds = new Set((githubRepos || []).map(r => (r?.id !== undefined ? String(r.id) : "")));
+        const sharedFiltered = sharedRepos.filter(r => {
+            const rid = r?.repoId ? String(r.repoId) : "";
+            return rid && !githubIds.has(rid);
+        });
 
         // 3. Combine them
         // We add a flag 'isShared' to style them differently if we want
         const combined = [
-            ...githubRes.data, 
-            ...sharedRepos.map(r => ({ ...r, id: r.repoId, isShared: true }))
+            ...githubRepos,
+            ...sharedFiltered.map(r => ({ 
+                ...r,
+                id: String(r.repoId),
+                name: r.name || "(shared repo)",
+                owner: r.owner || "unknown",
+                isShared: true 
+            }))
         ];
 
         res.status(200).json(combined);
@@ -283,5 +313,146 @@ export const getCodeAnchor = async (req, res) => {
         });
     } catch (error) {
         res.status(500).json({ error: "Failed to fetch code anchor" });
+    }
+};
+
+const pickDefined = (obj) => {
+    return Object.fromEntries(
+        Object.entries(obj).filter(([, v]) => v !== undefined)
+    );
+};
+
+export const createRepo = async (req, res) => {
+    try {
+        const user = await User.findById(req.user._id);
+        if (!user || !user.githubToken) {
+            return res.status(401).json({ error: "No GitHub token. Please login again." });
+        }
+
+        const {
+            ownerType = "user", // 'user' | 'org'
+            org,
+            name,
+            description,
+            homepage,
+            visibility = "public", // 'public' | 'private' | 'internal'
+
+            // init / templates
+            auto_init,
+            gitignore_template,
+            license_template,
+            is_template,
+
+            // common toggles
+            has_issues,
+            has_projects,
+            has_wiki,
+            has_discussions,
+
+            // merge settings
+            allow_squash_merge,
+            allow_merge_commit,
+            allow_rebase_merge,
+            delete_branch_on_merge,
+
+            // Optional: create repo from template repo
+            template_owner,
+            template_repo,
+            include_all_branches
+        } = req.body || {};
+
+        const repoName = String(name || "").trim();
+        if (!repoName) return res.status(400).json({ error: "Repository name is required" });
+        if (repoName.length > 100) return res.status(400).json({ error: "Repository name is too long (max 100 chars)" });
+        if (!/^[A-Za-z0-9_.-]+$/.test(repoName)) {
+            return res.status(400).json({
+                error: "Invalid repository name. Use letters, numbers, '.', '_' or '-' (no spaces)."
+            });
+        }
+
+        if (ownerType === "org" && !String(org || "").trim()) {
+            return res.status(400).json({ error: "org is required when ownerType is 'org'" });
+        }
+
+        if (ownerType !== "user" && ownerType !== "org") {
+            return res.status(400).json({ error: "ownerType must be 'user' or 'org'" });
+        }
+
+        if (visibility === "internal" && ownerType !== "org") {
+            return res.status(400).json({ error: "'internal' visibility is only valid for organization repositories" });
+        }
+
+        const desiredPrivate = visibility === "private" || visibility === "internal";
+        const githubHeaders = {
+            Authorization: `Bearer ${user.githubToken}`,
+            Accept: "application/vnd.github+json",
+            "X-GitHub-Api-Version": "2022-11-28"
+        };
+
+        // -------------------------------
+        // Template-based repo creation
+        // -------------------------------
+        if (template_owner && template_repo) {
+            const targetOwner = ownerType === "org" ? String(org).trim() : user.username;
+            const url = `https://api.github.com/repos/${template_owner}/${template_repo}/generate`;
+
+            const payload = pickDefined({
+                owner: targetOwner,
+                name: repoName,
+                description,
+                private: desiredPrivate,
+                include_all_branches: include_all_branches === true
+            });
+
+            const response = await axios.post(url, payload, { headers: githubHeaders });
+            return res.status(201).json({ repo: response.data });
+        }
+
+        // -------------------------------
+        // Normal repo creation
+        // -------------------------------
+        const url = ownerType === "org"
+            ? `https://api.github.com/orgs/${String(org).trim()}/repos`
+            : "https://api.github.com/user/repos";
+
+        // GitHub only applies license/gitignore when the repo is initialized.
+        const shouldAutoInit = auto_init === true || Boolean(gitignore_template) || Boolean(license_template);
+
+        const payload = pickDefined({
+            name: repoName,
+            description,
+            homepage,
+            private: desiredPrivate,
+
+            ...(ownerType === "org" ? { visibility } : {}),
+
+            auto_init: shouldAutoInit,
+            gitignore_template,
+            license_template,
+            is_template,
+
+            has_issues,
+            has_projects,
+            has_wiki,
+            has_discussions,
+
+            allow_squash_merge,
+            allow_merge_commit,
+            allow_rebase_merge,
+            delete_branch_on_merge
+        });
+
+        const response = await axios.post(url, payload, { headers: githubHeaders });
+        return res.status(201).json({ repo: response.data });
+
+    } catch (error) {
+        const status = error?.response?.status || 500;
+        const gh = error?.response?.data;
+
+        // Normalize GitHub error payloads for the UI
+        return res.status(status).json({
+            error: gh?.message || "Failed to create repository",
+            details: gh?.errors || undefined
+        });
     }
 };

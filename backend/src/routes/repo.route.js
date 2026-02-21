@@ -1,5 +1,5 @@
 import express from "express";
-import { getRepos, getRepoMessages, getRepoFiles, getFileContent, getCodeAnchor, pullRepo, pushRepo, getLocalFilePath, getLocalFileContent, updateLocalFileContent } from "../controllers/repo.controller.js";
+import { getRepos, getRepoMessages, getRepoFiles, getFileContent, getCodeAnchor, pullRepo, pushRepo, getLocalFilePath, getLocalFileContent, updateLocalFileContent, createRepo } from "../controllers/repo.controller.js";
 import { protectRoute } from "../middleware/protectRoute.js";
 
 import { getAppStructure, getDependencyGraph } from "../controllers/visualizer.controller.js"; // Import
@@ -7,6 +7,7 @@ import { getAppStructure, getDependencyGraph } from "../controllers/visualizer.c
 const router = express.Router();
 
 router.get("/", protectRoute, getRepos);
+router.post("/create", protectRoute, createRepo);
 
 router.get("/:repoId/messages", protectRoute, getRepoMessages);
 router.get("/files", protectRoute, getRepoFiles);

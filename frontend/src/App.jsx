@@ -15,11 +15,11 @@ function App() {
     useEffect(() => {
         const jwt = localStorage.getItem("jwt");
         if (jwt) {
-            axios.defaults.headers.common['Authorization'] = `Bearer ${jwt}`; // 👈 CRITICAL FIX
-            checkAuth();
+            axios.defaults.headers.common['Authorization'] = `Bearer ${jwt}`;
         } else {
-            checkAuth(); 
+            delete axios.defaults.headers.common['Authorization'];
         }
+        checkAuth();
     }, [checkAuth]);
 
     // 2. On Login Success: Receive token, Save it, Attach it

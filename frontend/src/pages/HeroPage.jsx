@@ -7,9 +7,11 @@ const HeroPage = () => {
     const handleLogin = () => {
         // VS Code / Web Login Logic
         if (window.parent !== window) {
+            // Initiated from the VS Code webview (iframe): tell the backend to deep-link
+            // back into VS Code after OAuth completes.
             window.parent.postMessage({ 
                 command: 'loginGithub', 
-                url: "http://localhost:5000/api/auth/github" 
+                url: "http://localhost:5000/api/auth/github?source=vscode" 
             }, "*");
         } else {
             window.location.href = "http://localhost:5000/api/auth/github";
