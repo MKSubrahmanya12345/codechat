@@ -3,7 +3,7 @@ import { useAuthStore } from "../store/authUser";
 import { 
     LogOut, Star, GitFork, MessageSquare, ArrowLeft, Send, Search, 
     Folder, FileCode, Users, Hash, ChevronLeft, Bell, Plus, Check, 
-    Paperclip, X, MoreVertical, Share2, Network, Copy, FolderSync, Upload, Settings, Code2, Github
+    Paperclip, X, MoreVertical, Share2, Network, Copy, FolderSync, Upload, Settings, Code2, Github, Sparkles
 } from "lucide-react";
 import axios from "axios";
 import io from "socket.io-client";
@@ -211,7 +211,10 @@ const ChatComponent = ({ repo }) => {
             .then((res) => setMessages(res.data))
             .catch(console.error);
 
-        const handleMsg = (msg) => setMessages(prev => [...prev, msg]);
+        const handleMsg = (msg) => setMessages(prev => {
+            if (prev.some(m => m._id === msg._id)) return prev;
+            return [...prev, msg];
+        });
         const handleUpdate = (updatedMsg) => setMessages(prev => prev.map(m => m._id === updatedMsg._id ? updatedMsg : m));
         const handleDelete = (id) => setMessages(prev => prev.filter(m => m._id !== id));
         const handleTyping = (user) => setTypingUsers(prev => new Set(prev).add(user));
@@ -224,8 +227,11 @@ const ChatComponent = ({ repo }) => {
         socket.on("userStoppedTyping", handleStopTyping);
 
         return () => {
-            socket.off("receiveMessage"); socket.off("messageUpdated");
-            socket.off("messageDeleted"); socket.off("userTyping"); socket.off("userStoppedTyping");
+            socket.off("receiveMessage", handleMsg); 
+            socket.off("messageUpdated", handleUpdate);
+            socket.off("messageDeleted", handleDelete); 
+            socket.off("userTyping", handleTyping); 
+            socket.off("userStoppedTyping", handleStopTyping);
         };
     }, [repo.id]);
 
@@ -1254,6 +1260,13 @@ const HomePage = () => {
                             </div>
 
                             <div className="flex gap-2 mt-5">
+                                <Link
+                                    to="/ideation"
+                                    state={{ newRepo }}
+                                    className="flex-[1.5] py-2 bg-purple-600 hover:bg-purple-500 rounded-lg text-sm font-bold flex flex-row items-center justify-center gap-2"
+                                >
+                                    <Sparkles size={16} /> AI Brainstorm
+                                </Link>
                                 <button
                                     onClick={() => { setShowCreateRepoModal(false); setCreateRepoError(""); }}
                                     className="flex-1 py-2 bg-gray-800 rounded-lg text-sm"
@@ -1311,11 +1324,17 @@ const HomePage = () => {
                                     <Upload size={12} /> Push
                                 </button>
                                 {/* 👇 FIX: Pass owner and repo params */}
-                                    <Link 
+                                <Link 
                                     to={`/architecture?owner=${encodeURIComponent(getRepoOwnerLogin(selectedRepo) || "")}&repo=${encodeURIComponent(getRepoNameSafe(selectedRepo) || "")}`}
                                     className="flex items-center gap-2 text-xs bg-purple-500/10 text-purple-400 hover:bg-purple-500/20 px-3 py-1.5 rounded-full border border-purple-500/20"
                                 >
                                     <Network size={12} /> Visualize
+                                </Link>
+                                <Link
+                                    to={`/data-flow?owner=${encodeURIComponent(getRepoOwnerLogin(selectedRepo) || "")}&repo=${encodeURIComponent(getRepoNameSafe(selectedRepo) || "")}`}
+                                    className="flex items-center gap-2 text-xs bg-cyan-500/10 text-cyan-300 hover:bg-cyan-500/20 px-3 py-1.5 rounded-full border border-cyan-500/20"
+                                >
+                                    <Network size={12} /> Vizualize data flow
                                 </Link>
                                 <button
                                     onClick={() => { setInviteUsername(""); setInviteResults([]); setInviteLink(""); setShowInviteModal(true); }}

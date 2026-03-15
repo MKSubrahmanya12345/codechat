@@ -4,25 +4,25 @@ import { useAuthStore } from "./store/authUser";
 import HomePage from "./pages/HomePage";
 import HeroPage from "./pages/HeroPage";
 import { Loader } from "lucide-react";
-import ArchitecturePage from "./pages/ArchitecturePage"; // 👈 THIS WAS MISSING
+import ArchitecturePage from "./pages/ArchitecturePage";
+import DataFlowPage from "./pages/DataFlowPage";
 import InviteAcceptPage from "./pages/InviteAcceptPage";
-import axios from "axios"; // 👈 IMPORT AXIOS
+import IdeationPage from "./pages/IdeationPage";
+import axios from "axios";
 
 function App() {
     const { authUser, checkAuth, isCheckingAuth } = useAuthStore();
 
-    // 1. On Load: Check if we have a saved token and Attach it
     useEffect(() => {
         const jwt = localStorage.getItem("jwt");
         if (jwt) {
-            axios.defaults.headers.common['Authorization'] = `Bearer ${jwt}`;
+            axios.defaults.headers.common.Authorization = `Bearer ${jwt}`;
         } else {
-            delete axios.defaults.headers.common['Authorization'];
+            delete axios.defaults.headers.common.Authorization;
         }
         checkAuth();
     }, [checkAuth]);
 
-    // 2. On Login Success: Receive token, Save it, Attach it
     useEffect(() => {
         const handleMessage = (event) => {
             if (event?.data?.command === "authSuccess") {
@@ -30,8 +30,8 @@ function App() {
                 if (!token) return;
 
                 localStorage.setItem("jwt", token);
-                axios.defaults.headers.common['Authorization'] = `Bearer ${token}`; // 👈 CRITICAL FIX
-                checkAuth(); 
+                axios.defaults.headers.common.Authorization = `Bearer ${token}`;
+                checkAuth();
             }
         };
 
@@ -52,6 +52,8 @@ function App() {
             <Route path="/" element={!authUser ? <HeroPage /> : <Navigate to="/home" />} />
             <Route path="/home" element={authUser ? <HomePage /> : <Navigate to="/" />} />
             <Route path="/architecture" element={authUser ? <ArchitecturePage /> : <Navigate to="/" />} />
+            <Route path="/data-flow" element={authUser ? <DataFlowPage /> : <Navigate to="/" />} />
+            <Route path="/ideation" element={authUser ? <IdeationPage /> : <Navigate to="/" />} />
             <Route path="/invite/:token" element={<InviteAcceptPage />} />
         </Routes>
     );

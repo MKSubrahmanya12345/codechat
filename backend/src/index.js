@@ -9,12 +9,13 @@ import fs from "fs";
 
 import { connectDB } from "./lib/db.js";
 import { Server } from "socket.io";
-import { Message } from "./models/message.model.js"; // 👈 CRITICAL IMPORT
+import { Message } from "./models/message.model.js";
 
 import authRoutes from "./routes/auth.route.js";
 import repoRoutes from "./routes/repo.route.js";
 import inviteRoutes from "./routes/invite.route.js";
 import userRoutes from "./routes/user.route.js";
+import hackathonRoutes from "./routes/hackathon.route.js";
 
 dotenv.config();
 
@@ -29,8 +30,8 @@ const io = new Server(server, {
   },
 });
 
-const presenceByRepo = new Map(); // repoId -> Map<username, { status, lastSeen, connections }>
-const socketMeta = new Map(); // socketId -> { repoId, username }
+const presenceByRepo = new Map();
+const socketMeta = new Map();
 
 // File Upload Setup
 const uploadDir = path.join(process.cwd(), "src/uploads");
@@ -53,6 +54,7 @@ app.use("/api/auth", authRoutes);
 app.use("/api/repos", repoRoutes);
 app.use("/api/invites", inviteRoutes);
 app.use("/api/user", userRoutes);
+app.use("/api/hackathon", hackathonRoutes);
 
 app.post("/api/upload", upload.single("file"), (req, res) => {
     if (!req.file) return res.status(400).json({ error: "No file uploaded" });

@@ -79,9 +79,10 @@ class ChatViewProvider implements vscode.WebviewViewProvider {
                         preview: false,
                         viewColumn: vscode.ViewColumn.Beside
                     });
-                    if (message.lineStart && message.lineEnd) {
+                    if (message.lineStart) {
+                        const resolvedEnd = message.lineEnd || message.lineStart;
                         const start = new vscode.Position(message.lineStart - 1, 0);
-                        const end = new vscode.Position(message.lineEnd - 1, 0);
+                        const end = new vscode.Position(resolvedEnd - 1, 0);
                         const range = new vscode.Range(start, end);
                         editor.selection = new vscode.Selection(start, end);
                         editor.revealRange(range, vscode.TextEditorRevealType.InCenter);

@@ -25,7 +25,7 @@ export const githubLogin = (req, res) => {
         `&state=${encodeURIComponent(state)}` +
         promptParam;
 
-    res.redirect(githubAuthUrl);
+    res.redirect(githubAuthUrl); 
 };
 
 /**
