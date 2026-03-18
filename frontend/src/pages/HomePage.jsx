@@ -950,6 +950,23 @@ const HomePage = () => {
                             <p className="text-sm text-gray-500 font-mono">Select a workspace</p>
                         </div>
                     </div>
+                    {/* ??$$$ — Resume AI Brainstorm: shows when localStorage has an active session */}
+                    {(() => {
+                        try {
+                            const s = JSON.parse(localStorage.getItem("hackbot_session_v2") || "{}");
+                            if (s.messages && s.messages.length > 1) return (
+                                <Link
+                                    to="/ideation"
+                                    className="flex items-center gap-2 px-4 py-2 bg-purple-600/20 hover:bg-purple-600/30 border border-purple-500/40 rounded-xl text-sm font-bold text-purple-300 hover:text-white transition relative"
+                                >
+                                    <span className="absolute -top-1 -right-1 w-2.5 h-2.5 rounded-full bg-purple-400 animate-pulse" />
+                                    <Sparkles size={15} />
+                                    Resume AI Brainstorm
+                                </Link>
+                            );
+                        } catch {}
+                        return null;
+                    })()}
                     <div className="flex items-center gap-4">
                         <div className="relative">
                             <button onClick={() => setShowInvites(!showInvites)} className="p-2 hover:bg-white/10 rounded-full relative">
@@ -1335,6 +1352,13 @@ const HomePage = () => {
                                     className="flex items-center gap-2 text-xs bg-cyan-500/10 text-cyan-300 hover:bg-cyan-500/20 px-3 py-1.5 rounded-full border border-cyan-500/20"
                                 >
                                     <Network size={12} /> Vizualize data flow
+                                </Link>
+                                <Link
+                                    to="/ideation"
+                                    state={{ newRepo: selectedRepo }}
+                                    className="flex items-center gap-2 text-xs bg-purple-500/10 text-purple-400 hover:bg-purple-500/20 px-3 py-1.5 rounded-full border border-purple-500/20"
+                                >
+                                    <Sparkles size={12} /> AI Brainstorm
                                 </Link>
                                 <button
                                     onClick={() => { setInviteUsername(""); setInviteResults([]); setInviteLink(""); setShowInviteModal(true); }}
