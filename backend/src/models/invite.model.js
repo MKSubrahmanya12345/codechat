@@ -6,6 +6,7 @@ const inviteSchema = new mongoose.Schema({
     repoId: { type: String, required: true },
     repoName: { type: String, required: true },
     repoOwner: { type: String, required: true },
+    inviteToken: { type: String, required: true, unique: true },
     status: { type: String, enum: ["pending", "accepted", "rejected"], default: "pending" }
 }, { timestamps: true });
 

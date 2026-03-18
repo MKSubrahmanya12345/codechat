@@ -11,6 +11,9 @@
   "author": "M K Subrahmanya",
   "license": "MIT",
   "dependencies": {
+    "@babel/parser": "^7.26.9",
+    "@babel/traverse": "^7.26.9",
+    "@google/genai": "^1.45.0",
     "axios": "^1.13.4",
     "bcrypt": "^6.0.0",
     "bcryptjs": "^3.0.3",
@@ -22,7 +25,14 @@
     "mongodb": "^7.0.0",
     "mongoose": "^9.1.5",
     "multer": "^2.0.2",
-    "socket.io": "^4.8.3"
+    "simple-git": "^3.27.0",
+    "socket.io": "^4.8.3",
+    "tree-sitter": "^0.25.0",
+    "tree-sitter-go": "^0.25.0",
+    "tree-sitter-java": "^0.23.5",
+    "tree-sitter-javascript": "^0.25.0",
+    "tree-sitter-python": "^0.25.0",
+    "tree-sitter-typescript": "^0.23.2"
   },
   "devDependencies": {
     "nodemon": "^3.1.11"

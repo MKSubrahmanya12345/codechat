@@ -8,13 +8,24 @@ import { User } from "../models/user.model.js";
 export const githubLogin = (req, res) => {
     const redirectUrl = `${process.env.BASE_URL}/api/auth/github/callback`;
 
+    // If the login flow was initiated by the VS Code extension, we need to deep-link
+    // back into VS Code after OAuth completes.
+    const source = req.query.source;
+    const state = source === "vscode" ? "vscode" : "web";
+
+    // GitHub supports prompt=login to force account selection / re-auth.
+    const prompt = (req.query.prompt || "").toString();
+    const promptParam = prompt === "login" ? `&prompt=login` : "";
+
     const githubAuthUrl =
         `https://github.com/login/oauth/authorize` +
         `?client_id=${process.env.GITHUB_CLIENT_ID}` +
         `&redirect_uri=${redirectUrl}` +
-        `&scope=read:user user:email`;
+        `&scope=read:user user:email repo` +
+        `&state=${encodeURIComponent(state)}` +
+        promptParam;
 
-    res.redirect(githubAuthUrl);
+    res.redirect(githubAuthUrl); 
 };
 
 /**
@@ -28,9 +39,16 @@ export const githubLogin = (req, res) => {
  *  - VS Code deep-link redirect
  */
 export const githubCallback = async (req, res) => {
-    const { code } = req.query;
+    const { code, state } = req.query;
 
     if (!code) {
+        // If this was initiated from VS Code, we can't rely on the web UI.
+        if (state === "vscode") {
+            return res.redirect(
+                "vscode://MKSubrahmanya.codechat/auth?error=missing_code"
+            );
+        }
+
         return res.redirect(
             `${process.env.CLIENT_URL}/login?error=missing_code`
         );
@@ -82,19 +100,52 @@ export const githubCallback = async (req, res) => {
         /* ----------------------------------------------------
            3. Upsert user in DB (token always refreshed)
         ---------------------------------------------------- */
-        const user = await User.findOneAndUpdate(
-            { githubId: id.toString() },
-            {
-                username: login,
-                avatarUrl: avatar_url,
-                email,
-                githubToken: accessToken, // server-only usage
-            },
-            {
-                new: true,
-                upsert: true,
+        let user = await User.findOne({ githubId: id.toString() });
+
+        if (user) {
+            user = await User.findByIdAndUpdate(
+                user._id,
+                {
+                    username: login,
+                    avatarUrl: avatar_url,
+                    email,
+                    githubToken: accessToken,
+                    status: "active"
+                },
+                { new: true }
+            );
+        } else {
+            const shadow = await User.findOne({ username: login, status: "shadow" });
+            if (shadow) {
+                user = await User.findByIdAndUpdate(
+                    shadow._id,
+                    {
+                        githubId: id.toString(),
+                        username: login,
+                        avatarUrl: avatar_url,
+                        email,
+                        githubToken: accessToken,
+                        status: "active"
+                    },
+                    { new: true }
+                );
+            } else {
+                user = await User.findOneAndUpdate(
+                    { githubId: id.toString() },
+                    {
+                        username: login,
+                        avatarUrl: avatar_url,
+                        email,
+                        githubToken: accessToken,
+                        status: "active"
+                    },
+                    {
+                        new: true,
+                        upsert: true,
+                    }
+                );
             }
-        );
+        }
 
         /* ----------------------------------------------------
            4. Generate JWT
@@ -116,13 +167,17 @@ export const githubCallback = async (req, res) => {
         });
 
         /* ----------------------------------------------------
-           6. Redirect to VS Code extension
+           6. Redirect
+           - Web app: go to the SPA
+           - VS Code extension: deep-link back into VS Code with the JWT
         ---------------------------------------------------- */
-        const encodedToken = encodeURIComponent(jwtToken);
+        if (state === "vscode") {
+            const vscodeUri = new URL("vscode://MKSubrahmanya.codechat/auth");
+            vscodeUri.searchParams.set("token", jwtToken);
+            return res.redirect(vscodeUri.toString());
+        }
 
-        res.redirect(
-            `vscode://MKSubrahmanya.codechat/auth?token=${encodedToken}`
-        );
+        res.redirect(`${process.env.CLIENT_URL}/home`);
 
     } catch (error) {
         console.error("GitHub OAuth Callback Error:", error);
