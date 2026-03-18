@@ -608,6 +608,14 @@ const HomePage = () => {
         include_all_branches: false
     });
 
+    // ??$$$ — Bridge (Side Repo Sync) States
+    const [bridgeSearchQuery, setBridgeSearchQuery] = useState("");
+    const [bridgeSearchResults, setBridgeSearchResults] = useState([]);
+    const [selectedBridgeRepo, setSelectedBridgeRepo] = useState(null);
+    const [isBridgeSearching, setIsBridgeSearching] = useState(false);
+    const [bridgeSyncLoading, setBridgeSyncLoading] = useState(false);
+
+
     // 1. Fetch Repos & Invites
     // ✅ Important: do not let one failing request blank out everything.
     const fetchData = async () => {
@@ -725,6 +733,27 @@ const HomePage = () => {
 
         return () => clearTimeout(t);
     }, [inviteUsername, showInviteModal]);
+
+    // ??$$$ — Bridge Search Effect: only fires when user actually types something
+    useEffect(() => {
+        if (!showCreateRepoModal) return;
+        const q = bridgeSearchQuery.trim();
+        // ??$$$ — don't auto-fire an empty search; wait until user types
+        if (!q) {
+            setBridgeSearchResults([]);
+            setIsBridgeSearching(false);
+            return;
+        }
+        setIsBridgeSearching(true);
+        const t = setTimeout(() => {
+            axios.get("http://localhost:5000/api/bridge/search", { params: { q } })
+                .then(res => setBridgeSearchResults(res.data || []))
+                .catch(() => setBridgeSearchResults([]))
+                .finally(() => setIsBridgeSearching(false));
+        }, 500);
+        return () => clearTimeout(t);
+    }, [bridgeSearchQuery, showCreateRepoModal]);
+
 
     const handleAcceptInvite = async (inviteId) => {
         try {
@@ -892,6 +921,57 @@ const HomePage = () => {
         }
     };
 
+    // ??$$$ — Handle Bridge Sync & Create
+    const handleSyncBridge = async () => {
+        const targetName = String(newRepo.name || "").trim();
+        if (!selectedBridgeRepo) {
+            setCreateRepoError("Select a source repo from The Bridge search above.");
+            return;
+        }
+        if (!targetName) {
+            setCreateRepoError("Enter a name for the new (target) repository.");
+            return;
+        }
+        if (!/^[A-Za-z0-9_.-]+$/.test(targetName)) {
+            setCreateRepoError("Invalid name. Use letters, numbers, '.', '_' or '-'.");
+            return;
+        }
+
+        setBridgeSyncLoading(true);
+        setCreateRepoError("");
+        try {
+            const res = await axios.post("http://localhost:5000/api/bridge/sync", {
+                sideRepo: selectedBridgeRepo,
+                targetRepoName: targetName,
+                targetDescription: newRepo.description,
+                targetVisibility: newRepo.visibility
+            });
+            // Close modal and reset bridge state
+            setShowCreateRepoModal(false);
+            setSelectedBridgeRepo(null);
+            setBridgeSearchQuery("");
+            setBridgeSearchResults([]);
+
+            alert(res.data.message);
+
+            // Refresh repos and auto-select the synced one
+            const { repos: freshRepos } = await fetchData();
+            const created = res.data?.repo;
+            const found = created?.id
+                ? freshRepos.find(r => String(r.id) === String(created.id))
+                : freshRepos.find(r => r.name === targetName);
+            if (found) {
+                localStorage.setItem("lastSelectedRepoId", String(found.id));
+                setSelectedRepo(found);
+            }
+        } catch (e) {
+            setCreateRepoError(e?.response?.data?.error || "Bridge Sync Failed. Check console.");
+        } finally {
+            setBridgeSyncLoading(false);
+        }
+    };
+
+
     const sendToExtension = (message) => {
         if (window.parent !== window) {
             window.parent.postMessage(message, "*");
@@ -950,7 +1030,8 @@ const HomePage = () => {
                             <p className="text-sm text-gray-500 font-mono">Select a workspace</p>
                         </div>
                     </div>
-                    {/* ??$$$ — Resume AI Brainstorm: shows when localStorage has an active session */}
+                    {/* 
+                    // ??$$$ commented out AI brainstorm resume button
                     {(() => {
                         try {
                             const s = JSON.parse(localStorage.getItem("hackbot_session_v2") || "{}");
@@ -967,6 +1048,7 @@ const HomePage = () => {
                         } catch {}
                         return null;
                     })()}
+                    */}
                     <div className="flex items-center gap-4">
                         <div className="relative">
                             <button onClick={() => setShowInvites(!showInvites)} className="p-2 hover:bg-white/10 rounded-full relative">
@@ -1019,6 +1101,10 @@ const HomePage = () => {
                                 });
                                 setCreateRepoError("");
                                 setCreateRepoAdvanced(false);
+                                // ??$$$ — Reset bridge state on modal open
+                                setBridgeSearchQuery("");
+                                setBridgeSearchResults([]);
+                                setSelectedBridgeRepo(null);
                                 setShowCreateRepoModal(true);
                             }}
                             className="p-2 hover:bg-white/10 rounded-full text-gray-400 hover:text-white"
@@ -1043,7 +1129,7 @@ const HomePage = () => {
 
                 {showCreateRepoModal && (
                     <div className="fixed inset-0 bg-black/80 z-50 flex items-center justify-center p-4 backdrop-blur-sm">
-                        <div className="bg-[#1A1A1A] p-6 rounded-xl border border-white/10 w-full max-w-lg">
+                        <div className="bg-[#1A1A1A] p-6 rounded-xl border border-white/10 w-full max-w-lg max-h-[90vh] overflow-y-auto">
                             <div className="flex items-center justify-between mb-4">
                                 <h3 className="text-lg font-bold">Create a new repository</h3>
                                 <button
@@ -1059,6 +1145,48 @@ const HomePage = () => {
                                     {createRepoError}
                                 </div>
                             )}
+
+                            {/* ??$$$ — THE BRIDGE UI: Side Repo Search */}
+                            <div className="mb-4 border border-purple-500/20 rounded-xl bg-purple-500/5 p-3">
+                                <div className="flex items-center gap-2 mb-2">
+                                    <span className="text-[10px] font-bold text-purple-400 uppercase tracking-widest">⚡ The Bridge</span>
+                                    <span className="text-[10px] text-gray-500">Sync content from an existing repo</span>
+                                </div>
+                                <div className="relative mb-2">
+                                    <Search size={13} className="absolute left-2.5 top-2.5 text-gray-500" />
+                                    <input
+                                        type="text"
+                                        placeholder="Search your repos to sync from..."
+                                        className="w-full bg-[#0C0C0C] border border-white/10 rounded-lg pl-8 pr-3 py-2 text-xs text-white outline-none focus:border-purple-500 placeholder-gray-600"
+                                        value={bridgeSearchQuery}
+                                        onChange={(e) => { setBridgeSearchQuery(e.target.value); setSelectedBridgeRepo(null); }}
+                                    />
+                                    {isBridgeSearching && <span className="absolute right-2.5 top-2 text-[10px] text-purple-400 animate-pulse">searching...</span>}
+                                </div>
+                                {bridgeSearchResults.length > 0 && !selectedBridgeRepo && (
+                                    <div className="max-h-28 overflow-y-auto space-y-1">
+                                        {bridgeSearchResults.slice(0, 8).map(repo => (
+                                            <button
+                                                key={repo.id}
+                                                onClick={() => { setSelectedBridgeRepo(repo); setBridgeSearchResults([]); }}
+                                                className="w-full text-left px-3 py-1.5 rounded-lg text-xs text-gray-300 hover:bg-purple-500/20 hover:text-white transition flex items-center justify-between"
+                                            >
+                                                <span className="font-mono truncate">{repo.full_name}</span>
+                                                <span className="text-[10px] text-gray-600 ml-2 shrink-0">{repo.private ? "private" : "public"}</span>
+                                            </button>
+                                        ))}
+                                    </div>
+                                )}
+                                {selectedBridgeRepo && (
+                                    <div className="flex items-center justify-between bg-purple-500/15 border border-purple-500/30 rounded-lg px-3 py-2 text-xs">
+                                        <span className="text-purple-300 font-mono font-bold">{selectedBridgeRepo.full_name}</span>
+                                        <button onClick={() => setSelectedBridgeRepo(null)} className="text-gray-500 hover:text-red-400 ml-3"><X size={12} /></button>
+                                    </div>
+                                )}
+                                {!selectedBridgeRepo && !bridgeSearchQuery && (
+                                    <p className="text-[10px] text-gray-700 text-center py-1">Or skip this section to create a blank repo ↓</p>
+                                )}
+                            </div>
 
                             <div className="space-y-3">
                                 <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
@@ -1292,11 +1420,11 @@ const HomePage = () => {
                                     Cancel
                                 </button>
                                 <button
-                                    onClick={handleCreateRepo}
+                                    onClick={selectedBridgeRepo ? handleSyncBridge : handleCreateRepo}
                                     className="flex-1 py-2 bg-emerald-600 rounded-lg text-sm font-bold disabled:opacity-60"
-                                    disabled={createRepoLoading}
+                                    disabled={createRepoLoading || bridgeSyncLoading}
                                 >
-                                    {createRepoLoading ? "Creating..." : "Create"}
+                                    {bridgeSyncLoading ? "Syncing..." : createRepoLoading ? "Creating..." : selectedBridgeRepo ? "Sync & Create" : "Create"}
                                 </button>
                             </div>
 

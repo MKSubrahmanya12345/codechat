@@ -12,6 +12,11 @@ import {
     Download, Plus, X, RefreshCw, Star, Trophy, Zap, Eye, Circle
 } from "lucide-react";
 import { useNavigate, useLocation } from "react-router-dom";
+import { io } from "socket.io-client";
+import { useAuthStore } from "../store/authUser";
+
+// ??$$$ — Singleton socket for ideation (shared real-time channel)
+const ideationSocket = io("http://localhost:5000");
 
 // ??$$$ — STORAGE KEY for session persistence
 const SESSION_KEY = "hackbot_session_v2";
@@ -143,14 +148,20 @@ const IdeationPage = () => {
     const navigate = useNavigate();
     const location = useLocation();
 
-    // ??$$$ — Memoize nodeTypes to avoid React Flow warnings/re-renders
+    // ??$$$ — Memoize nodeTypes/edgeTypes to avoid React Flow warnings/re-renders
     const nodeTypes = React.useMemo(() => ({ custom: CustomNode }), []);
+    const edgeTypes = React.useMemo(() => ({}), []); 
     const newRepo = location.state?.newRepo || null;
 
-    // ??$$$ — DYNAMIC KEY: use repo-specific key if available, fallback to global
-    //  We save to BOTH so the "Resume" button on header always hits the LATEST one.
-    const activeKey = newRepo?.name ? `hackbot_session_${newRepo.name}` : SESSION_KEY;
-    const repoSlug = newRepo?.name || "latest";
+    // ??$$$ — DYNAMIC KEY: use repo-specific key to retain individual chat state
+    let initialSlug = newRepo?.name;
+    if (initialSlug) {
+        localStorage.setItem("last_ideation_repo", initialSlug);
+    } else {
+        initialSlug = localStorage.getItem("last_ideation_repo") || "latest";
+    }
+    const repoSlug = initialSlug;
+    const activeKey = `hackbot_session_${repoSlug}`;
 
     // ??$$$ — Load from localStorage on mount (initial fast load)
     const savedSession = (() => {
@@ -169,10 +180,17 @@ const IdeationPage = () => {
     const [teamSize, setTeamSize] = useState(savedSession.teamSize || 2);
     const [hackHours, setHackHours] = useState(savedSession.hackHours || 24);
 
-    // ??$$$ — State: live blueprint
-    const [blueprint, setBlueprint] = useState(savedSession.blueprint || {
-        techStack: [], folderStructure: "", hostingInstructions: "", codeMePreview: ""
+    // ??$$$ — Helper to ensure blueprint fields are always correctly typed (AI sometimes returns null/empty objects)
+    const normalizeBlueprint = (bp) => ({
+        techStack:           Array.isArray(bp?.techStack) ? bp.techStack : [],
+        folderStructure:     (typeof bp?.folderStructure === "string" && bp.folderStructure) || "",
+        hostingInstructions: (typeof bp?.hostingInstructions === "string" && bp.hostingInstructions) || "",
+        codeMePreview:       (typeof bp?.codeMePreview === "string" && bp.codeMePreview) || "",
+        graph:               bp?.graph || null
     });
+
+    // ??$$$ — State: live blueprint
+    const [blueprint, setBlueprint] = useState(() => normalizeBlueprint(savedSession?.blueprint));
 
     // ??$$$ — State: editable CodeME (user can edit the preview before pushing)
     const [editableCodeMe, setEditableCodeMe] = useState(savedSession.blueprint?.codeMePreview || "");
@@ -190,7 +208,37 @@ const IdeationPage = () => {
     const [uiPreview, setUiPreview] = useState(savedSession.uiPreview || "");
     const [isGeneratingUi, setIsGeneratingUi] = useState(false);
 
-    // ??$$$ — Fetch Cloud Session on mount
+    // ??$$$ — Auth user (for sender tagging)
+    const { authUser } = useAuthStore();
+    const myUsername = authUser?.username || "You";
+
+    // ??$$$ — Collaborative: live teammates + typing
+    const [teammates, setTeammates] = useState([]);
+    const [someoneTyping, setSomeoneTyping] = useState(null); // username or null
+
+    // ??$$$ — Conflict detection state
+    const [conflicts, setConflicts] = useState([]);
+    const [dismissedConflicts, setDismissedConflicts] = useState(new Set());
+    const [conflictCheckLoading, setConflictCheckLoading] = useState(false);
+
+    // ??$$$ — Image upload state
+    const [imageUploadLoading, setImageUploadLoading] = useState(false);
+    const imageInputRef = useRef(null);
+
+    // ??$$$ — @mention autocomplete state
+    const [mentionDropdown, setMentionDropdown] = useState([]);
+    const inputRef = useRef(null);
+
+    // ??$$$ — Ref that always holds latest messages (needed for socket callbacks without stale closures)
+    const messagesRef = useRef(messages);
+    useEffect(() => { messagesRef.current = messages; }, [messages]);
+
+    // ??$$$ — Ref for latest repoSlug (for socket callbacks)
+    const repoSlugRef = useRef(repoSlug);
+    const myUsernameRef = useRef(myUsername);
+    useEffect(() => { myUsernameRef.current = myUsername; }, [myUsername]);
+
+    // ??$$$ — Fetch Cloud Session on mount + join ideation socket room
     useEffect(() => {
         const fetchCloudSession = async () => {
             try {
@@ -198,7 +246,7 @@ const IdeationPage = () => {
                 if (res.data) {
                     const s = res.data;
                     setMessages(s.messages || []);
-                    setBlueprint(s.blueprint || {});
+                    setBlueprint(normalizeBlueprint(s.blueprint));
                     setTeamSize(s.teamSize || 2);
                     setHackHours(s.hackHours || 24);
                     if (s.nodes) setNodes(s.nodes.map(n => ({ ...n, type: "custom" })));
@@ -212,7 +260,79 @@ const IdeationPage = () => {
             }
         };
         fetchCloudSession();
-    }, [repoSlug, setNodes, setEdges]);
+
+        // ??$$$ — Join ideation socket room for this repo
+        if (myUsername && repoSlug) {
+            ideationSocket.emit("ideation_join", { repoSlug, username: myUsername });
+        }
+
+        // ??$$$ — Helper: merge two message arrays, deduplicated, sorted by timestamp
+        const mergeMessages = (existing, incoming) => {
+            const map = new Map();
+            [...existing, ...incoming].forEach(m => {
+                // Key: timestamp + role + sender + first 30 chars of content (handles missing ts)
+                const key = `${m.ts || 0}_${m.role}_${m.sender || "ai"}_${(m.content || "").slice(0, 30)}`;
+                if (!map.has(key)) map.set(key, m);
+            });
+            return Array.from(map.values()).sort((a, b) => (a.ts || 0) - (b.ts || 0));
+        };
+
+        // ??$$$ — Listen: teammate list updates
+        ideationSocket.on("ideation_teammates", (list) => setTeammates(list));
+
+        // ??$$$ — Listen: another teammate sent a message + got AI response
+        //         MERGE messages instead of replace to prevent overwriting own history
+        ideationSocket.on("ideation_update", ({ session }) => {
+            if (!session) return;
+            if (session.messages?.length) {
+                setMessages(prev => mergeMessages(prev, session.messages));
+            }
+            if (session.blueprint) {
+                setBlueprint(prev => {
+                    const bp = session.blueprint;
+                    return {
+                        ...prev,
+                        techStack:           Array.isArray(bp.techStack) && bp.techStack.length > 0 ? bp.techStack : prev.techStack,
+                        folderStructure:     (typeof bp.folderStructure === "string" && bp.folderStructure) || prev.folderStructure,
+                        hostingInstructions: (typeof bp.hostingInstructions === "string" && bp.hostingInstructions) || prev.hostingInstructions,
+                        codeMePreview:       (typeof bp.codeMePreview === "string" && bp.codeMePreview) || prev.codeMePreview,
+                    };
+                });
+            }
+            if (session.nodes?.length) setNodes(session.nodes.map(n => ({ ...n, type: "custom" })));
+            if (session.edges?.length) setEdges(session.edges);
+            if (session.conflicts?.length) setConflicts(session.conflicts);
+        });
+
+        // ??$$$ — Listen: existing member asked to re-broadcast (catch-up for new joiner)
+        ideationSocket.on("ideation_need_sync", () => {
+            const current = messagesRef.current;
+            if (!current?.length) return;
+            ideationSocket.emit("ideation_sync", {
+                repoSlug: repoSlugRef.current,
+                senderUsername: myUsernameRef.current,
+                session: { messages: current }
+            });
+        });
+
+        // ??$$$ — Listen: typing indicator from teammates
+        ideationSocket.on("ideation_user_typing", ({ username, isTyping }) => {
+            setSomeoneTyping(isTyping ? username : null);
+        });
+
+        // ??$$$ — Listen: conflict dismissed by any teammate
+        ideationSocket.on("ideation_conflict_dismissed", ({ conflictId }) => {
+            setDismissedConflicts(prev => new Set([...prev, conflictId]));
+        });
+
+        return () => {
+            ideationSocket.off("ideation_teammates");
+            ideationSocket.off("ideation_update");
+            ideationSocket.off("ideation_need_sync");
+            ideationSocket.off("ideation_user_typing");
+            ideationSocket.off("ideation_conflict_dismissed");
+        };
+    }, [repoSlug, setNodes, setEdges, myUsername]);
 
     // ??$$$ — Save logic (manual or automatic)
     const saveToCloud = useCallback(async (currentData) => {
@@ -229,14 +349,22 @@ const IdeationPage = () => {
         }
     }, [repoSlug]);
 
-    // ??$$$ — Persist session to BOTH local and global key + Cloud Save (Debounced)
+    // ??$$$ — Persist session to repo-specific local key + Cloud Save (Debounced)
     useEffect(() => {
         const dataObj = { messages, blueprint, nodes, edges, teamSize, hackHours, fileDrafts, uiPreview };
         const dataStr = JSON.stringify(dataObj);
+        
+        // Save to repo-specific localStorage to survive hard refreshes
         localStorage.setItem(activeKey, dataStr);
-        localStorage.setItem(SESSION_KEY, dataStr);
 
-        const timeout = setTimeout(() => saveToCloud(dataObj), 1500);
+        const timeout = setTimeout(() => {
+            // ??$$$ ONLY save to cloud if the user has actually interacted or generated something.
+            // This prevents overwriting the cloud state with the default empty template on mount!
+            if (messages.length > 1 || nodes.length > 0 || blueprint.techStack?.length > 0) {
+                saveToCloud(dataObj);
+            }
+        }, 1500);
+        
         return () => clearTimeout(timeout);
     }, [messages, blueprint, nodes, edges, teamSize, hackHours, activeKey, saveToCloud, fileDrafts, uiPreview]);
 
@@ -285,7 +413,73 @@ const IdeationPage = () => {
         setRenameNode(null);
     };
 
-    // ??$$$ — Send chat message
+    // ??$$$ — Run conflict detection after each AI response (debounced, non-blocking)
+    const runConflictCheck = useCallback(async (currentMessages, currentBlueprint) => {
+        if (currentMessages.length < 4) return; // not enough context yet
+        setConflictCheckLoading(true);
+        try {
+            const res = await axios.post("http://localhost:5000/api/hackathon/detect-conflicts", {
+                messages: currentMessages,
+                blueprint: currentBlueprint
+            });
+            if (res.data?.conflicts?.length > 0) {
+                setConflicts(res.data.conflicts);
+            }
+        } catch (e) {
+            // Silently fail — conflicts are non-critical
+        } finally {
+            setConflictCheckLoading(false);
+        }
+    }, []);
+
+    // ??$$$ — Parse @mentions from a message
+    const parseMentions = (text) => {
+        const found = [];
+        const re = /@(\w+)/g;
+        let m;
+        while ((m = re.exec(text)) !== null) found.push(m[1].toLowerCase());
+        return found;
+    };
+
+    // ??$$$ — Upload image attachment
+    const handleImageUpload = async (file) => {
+        if (!file) return;
+        setImageUploadLoading(true);
+        try {
+            const formData = new FormData();
+            formData.append("file", file);
+            const res = await axios.post("http://localhost:5000/api/upload", formData, {
+                headers: { "Content-Type": "multipart/form-data" }
+            });
+            const imageUrl = res.data?.url || res.data?.fileUrl || null;
+            if (!imageUrl) return;
+
+            const imgMsg = { role: "user", content: "", sender: myUsername, ts: Date.now(), imageUrl };
+            const newHistory = [...messages, imgMsg];
+            setMessages(newHistory);
+
+            // Immediately broadcast so teammates see image
+            ideationSocket.emit("ideation_sync", { repoSlug, senderUsername: myUsername, session: { messages: newHistory } });
+            // Save to cloud silently
+            saveToCloud({ messages: newHistory, blueprint, nodes, edges, teamSize, hackHours, fileDrafts, uiPreview });
+        } catch (e) {
+            console.error("Image upload failed:", e.message);
+        } finally {
+            setImageUploadLoading(false);
+            if (imageInputRef.current) imageInputRef.current.value = "";
+        }
+    };
+
+    // ??$$$ — Insert @mention into input at cursor position
+    const insertMention = (name) => {
+        const atIdx = input.lastIndexOf("@");
+        const newVal = input.slice(0, atIdx) + `@${name} `;
+        setInput(newVal);
+        setMentionDropdown([]);
+        setTimeout(() => inputRef.current?.focus(), 0);
+    };
+
+    // ??$$$ — Send chat message — with mention parsing, immediate socket, argument detection
     const handleSend = async (text) => {
         const msg = text || input;
         if (!msg.trim()) return;
@@ -294,25 +488,50 @@ const IdeationPage = () => {
         const contextNote = `[Context: ${teamSize} devs, ${hackHours}h hackathon] `;
         const finalContent = messages.length === 1 ? contextNote + msg : msg;
 
-        const newMsg = { role: "user", content: finalContent };
+        const newMsg = { role: "user", content: finalContent, sender: myUsername, ts: Date.now() };
         const newHistory = [...messages, newMsg];
         setMessages(newHistory);
         setInput("");
-        setLoading(true);
+        setMentionDropdown([]);
 
+        // ??$$$ — IMMEDIATELY broadcast to teammates (smooth / real-time)
+        ideationSocket.emit("ideation_sync", { repoSlug, senderUsername: myUsername, session: { messages: newHistory } });
+        ideationSocket.emit("ideation_typing", { repoSlug, username: myUsername, isTyping: false });
+
+        // ??$$$ — Parse @mentions
+        const mentions = parseMentions(finalContent);
+        const mentionsAI = mentions.includes("ai") || mentions.includes("bot") || finalContent.toLowerCase().includes("@ai");
+        const mentionsOnlyUsers = mentions.length > 0 && !mentionsAI;
+
+        // ??$$$ — If message is directed @user only (no @ai) — skip AI, just save + broadcast
+        if (mentionsOnlyUsers) {
+            saveToCloud({ messages: newHistory, blueprint, nodes, edges, teamSize, hackHours, fileDrafts, uiPreview });
+            return;
+        }
+
+        // ??$$$ — Argument detection: 2+ senders rapid-fire in last 8 messages
+        const recentUserMsgs = messages.slice(-8).filter(m => m.role === "user");
+        const uniqueSenders = new Set(recentUserMsgs.map(m => m.sender));
+        const isArgument = uniqueSenders.size >= 2 && recentUserMsgs.length >= 4 && mentionsAI;
+
+        setLoading(true);
         try {
-            const res = await axios.post("http://localhost:5000/api/hackathon/chat", { messages: newHistory });
+            const res = await axios.post("http://localhost:5000/api/hackathon/chat", {
+                messages: newHistory,
+                isArgument
+            });
             const data = res.data;
 
             const replyText = typeof data.reply === "string" ? data.reply : "Processing...";
 
+            let newBP = blueprint;
             if (data.blueprint) {
                 const bp = data.blueprint;
-                const newBP = {
+                newBP = {
                     techStack:           Array.isArray(bp.techStack) && bp.techStack.length > 0 ? bp.techStack : blueprint.techStack,
-                    folderStructure:     bp.folderStructure     || blueprint.folderStructure,
-                    hostingInstructions: bp.hostingInstructions || blueprint.hostingInstructions,
-                    codeMePreview:       bp.codeMePreview       || blueprint.codeMePreview,
+                    folderStructure:     (typeof bp.folderStructure === "string" && bp.folderStructure) || blueprint.folderStructure,
+                    hostingInstructions: (typeof bp.hostingInstructions === "string" && bp.hostingInstructions) || blueprint.hostingInstructions,
+                    codeMePreview:       (typeof bp.codeMePreview === "string" && bp.codeMePreview) || blueprint.codeMePreview,
                 };
                 setBlueprint(newBP);
 
@@ -322,7 +541,14 @@ const IdeationPage = () => {
                 }
             }
 
-            setMessages([...newHistory, { role: "ai", content: replyText }]);
+            const finalMessages = [...newHistory, { role: "ai", content: replyText, ts: Date.now() }];
+            setMessages(finalMessages);
+
+            // ??$$$ — Broadcast AI response to teammates
+            ideationSocket.emit("ideation_sync", { repoSlug, senderUsername: myUsername, session: { messages: finalMessages, blueprint: newBP } });
+
+            if (finalMessages.length % 5 === 0) runConflictCheck(finalMessages, newBP);
+
         } catch {
             setMessages([...newHistory, { role: "ai", content: "⚠️ Couldn't reach AI. Check GEMINI_API_KEY in backend .env." }]);
         } finally {
@@ -401,20 +627,20 @@ const IdeationPage = () => {
         }
     };
 
-    // ??$$$ — Tech stack tag management
-    const removeTag = (idx) => setBlueprint(b => ({ ...b, techStack: b.techStack.filter((_, i) => i !== idx) }));
+    // ??$$$ — Tech stack tag management (null-safe)
+    const removeTag = (idx) => setBlueprint(b => ({ ...b, techStack: (b.techStack || []).filter((_, i) => i !== idx) }));
     const addTag = () => {
         if (!newTag.trim()) return;
-        setBlueprint(b => ({ ...b, techStack: [...b.techStack, newTag.trim()] }));
+        setBlueprint(b => ({ ...b, techStack: [...(b.techStack || []), newTag.trim()] }));
         setNewTag("");
     };
 
-    // ??$$$ — Has data indicator per tab
+    // ??$$$ — Has data indicator per tab (null-safe — AI now returns null in Phase 1/2)
     const hasData = {
-        techStack:           blueprint.techStack.length > 0,
-        folderStructure:     !!blueprint.folderStructure,
-        hostingInstructions: !!blueprint.hostingInstructions,
-        codeMePreview:       !!blueprint.codeMePreview || !!editableCodeMe,
+        techStack:           Array.isArray(blueprint?.techStack) && blueprint.techStack.length > 0,
+        folderStructure:     typeof blueprint?.folderStructure === "string" && blueprint.folderStructure.length > 0,
+        hostingInstructions: typeof blueprint?.hostingInstructions === "string" && blueprint.hostingInstructions.length > 0,
+        codeMePreview:       (typeof blueprint?.codeMePreview === "string" && blueprint.codeMePreview.length > 0) || (typeof editableCodeMe === "string" && editableCodeMe.length > 0),
         graph:               nodes.length > 0,
     };
 
@@ -463,6 +689,7 @@ const IdeationPage = () => {
                     <ReactFlow
                         nodes={nodes} edges={edges}
                         nodeTypes={nodeTypes}
+                        edgeTypes={edgeTypes}
                         onNodesChange={onNodesChange}
                         onEdgesChange={onEdgesChange}
                         onConnect={onConnect}
@@ -519,11 +746,11 @@ const IdeationPage = () => {
             return (
                 <div className="p-6 space-y-3 overflow-auto h-full">
                     <h3 className="text-[11px] font-bold text-gray-500 uppercase tracking-widest mb-4">Tech Stack</h3>
-                    {blueprint.techStack.length === 0 && (
+                    {(!blueprint.techStack || blueprint.techStack.length === 0) && (
                         <p className="text-xs text-gray-600 text-center py-8">No stack defined yet. Chat with the CTO to lock the tech choices.</p>
                     )}
                     <div className="flex flex-wrap gap-2">
-                        {blueprint.techStack.map((t, i) => (
+                        {(blueprint.techStack || []).map((t, i) => (
                             <div key={i} className="flex items-center gap-1.5 bg-indigo-500/10 border border-indigo-500/30 rounded-full px-3 py-1 text-sm text-indigo-200">
                                 {t}
                                 <button onClick={() => removeTag(i)} className="text-indigo-400 hover:text-red-400 transition ml-1">
@@ -551,9 +778,9 @@ const IdeationPage = () => {
 
         // --- FOLDER STRUCTURE (VIRTUAL FILE EXPLORER) ---
         if (activeTab === "folderStructure") {
-            const lines = (blueprint.folderStructure || "").split(/\n|\\n/).filter(l => l.trim() && !l.includes("📁"));
+            const lines = (typeof blueprint.folderStructure === "string" ? blueprint.folderStructure : "").split(/\n|\\n/).filter(l => l.trim() && !l.includes("📁"));
             // Simple logic to find filenames (usually ending in .js, .jsx, .json, .css etc)
-            const files = lines.map(l => l.trim().split(" ").pop()).filter(f => f.includes("."));
+            const files = lines.map(l => l.trim().split(" ").pop()).filter(f => f && typeof f === "string" && f.includes("."));
 
             return blueprint.folderStructure ? (
                 <div className="flex flex-col h-full overflow-hidden">
@@ -748,12 +975,12 @@ const IdeationPage = () => {
                         </div>
                     </div>
 
-                    {/* Custom Plan (Original AI Instructions) */}
-                    {blueprint.hostingInstructions && (
+                    {/* Custom Plan (Original AI Instructions) — ??$$$ null-safe: only if it's a real string */}
+                    {blueprint.hostingInstructions && typeof blueprint.hostingInstructions === "string" && (
                         <div className="mt-8 pt-8 border-t border-white/5">
                             <h4 className="text-[10px] font-bold text-gray-500 uppercase tracking-widest mb-4">AI Recommended Strategy</h4>
                             <div className="space-y-3">
-                                {blueprint.hostingInstructions.split(". ").filter(Boolean).map((line, i) => (
+                                {(blueprint.hostingInstructions?.split?.(". ") || []).filter(Boolean).map((line, i) => (
                                     <div key={i} className="flex items-start gap-3 bg-white/2 rounded-lg p-3">
                                         <Circle size={4} className="text-purple-500 mt-2 shrink-0 fill-purple-500" />
                                         <span className="text-[11px] text-gray-400 leading-relaxed">{line.trim()}.</span>
@@ -937,6 +1164,23 @@ const IdeationPage = () => {
                         <span className="ml-auto text-[10px] text-emerald-400 bg-emerald-400/10 border border-emerald-400/20 rounded px-2 py-0.5 font-bold">LIVE</span>
                     </div>
 
+                    {/* ??$$$ — Online teammates indicator */}
+                    {teammates.length > 0 && (
+                        <div className="flex items-center gap-1.5 mt-2 flex-wrap">
+                            {teammates.map(t => (
+                                <span key={t.username} className={`text-[10px] flex items-center gap-1 px-2 py-0.5 rounded-full font-bold ${
+                                    t.username === myUsername
+                                        ? "bg-emerald-500/10 text-emerald-400 border border-emerald-500/20"
+                                        : "bg-blue-500/10 text-blue-400 border border-blue-500/20"
+                                }`}>
+                                    <span className="w-1.5 h-1.5 rounded-full bg-current inline-block" />
+                                    {t.username === myUsername ? "You" : t.username}
+                                </span>
+                            ))}
+                            {conflictCheckLoading && <span className="text-[9px] text-yellow-500 animate-pulse ml-1">Checking conflicts...</span>}
+                        </div>
+                    )}
+
                     {/* ??$$$ — Hackathon context controls */}
                     <div className="flex gap-3 mt-3">
                         <div className="flex-1 bg-black border border-white/10 rounded-lg px-3 py-1.5 flex items-center gap-2">
@@ -979,26 +1223,150 @@ const IdeationPage = () => {
                     </div>
                 </div>
 
-                {/* Messages */}
-                <div className="flex-1 overflow-y-auto p-4 space-y-4">
-                    {messages.map((m, idx) => (
-                        <div key={idx} className={`flex flex-col ${m.role === "user" ? "items-end" : "items-start"}`}>
-                            <div className="flex items-center gap-1.5 mb-1">
-                                {m.role === "ai"
-                                    ? <Bot size={11} className="text-emerald-400" />
-                                    : <UserIcon size={11} className="text-blue-400" />}
-                                <span className="text-[10px] text-gray-600 uppercase font-bold tracking-wider">{m.role}</span>
+                {/* ??$$$ — Conflict Banner */}
+                {conflicts.filter(c => !dismissedConflicts.has(c.id)).length > 0 && (
+                    <div className="mx-4 mt-3 border border-yellow-500/30 bg-yellow-500/5 rounded-xl p-3 space-y-2 shrink-0">
+                        <div className="flex items-center gap-2">
+                            <span className="text-yellow-400 text-[11px] font-bold uppercase tracking-wider">⚠️ Conflicts Detected</span>
+                            <span className="text-[10px] text-gray-600">Fix before generating CodeME.md</span>
+                        </div>
+                        {conflicts.filter(c => !dismissedConflicts.has(c.id)).map(conflict => (
+                            <div key={conflict.id} className="bg-[#1a1500] border border-yellow-500/20 rounded-lg p-2">
+                                <div className="text-[11px] font-semibold text-yellow-300 mb-0.5">{conflict.title}</div>
+                                <div className="text-[10px] text-gray-400 mb-1.5">{conflict.description}</div>
+                                <div className="flex gap-1.5">
+                                    <button
+                                        onClick={() => {
+                                            setInput(conflict.fixPrompt || conflict.fix);
+                                        }}
+                                        className="text-[10px] px-2 py-1 bg-yellow-500/20 hover:bg-yellow-500/30 text-yellow-300 rounded-lg font-bold transition"
+                                    >Fix Now ↗</button>
+                                    <button
+                                        onClick={() => {
+                                            const newSet = new Set([...dismissedConflicts, conflict.id]);
+                                            setDismissedConflicts(newSet);
+                                            ideationSocket.emit("ideation_conflict_resolved", { repoSlug, conflictId: conflict.id });
+                                        }}
+                                        className="text-[10px] px-2 py-1 bg-white/5 hover:bg-white/10 text-gray-500 rounded-lg transition"
+                                    >Later</button>
+                                </div>
                             </div>
-                            <div className={`
-                                text-sm max-w-[92%] whitespace-pre-wrap leading-relaxed rounded-2xl px-4 py-2.5
-                                ${m.role === "user"
-                                    ? "bg-blue-600 text-white rounded-br-sm"
-                                    : "bg-[#1C1C1C] border border-white/8 text-gray-200 rounded-bl-sm"}
-                            `}>
-                                {m.content}
+                        ))}
+                    </div>
+                )}
+
+                {/* ??$$$ — Group Chat Messages */}
+                <div className="flex-1 overflow-y-auto p-4 space-y-1">
+                    {messages.map((m, idx) => {
+                        const isMe = m.role === "user" && (m.sender === myUsername || !m.sender);
+                        const isAI = m.role === "ai";
+                        const prevMsg = messages[idx - 1];
+                        const isSameAsPrev = prevMsg
+                            && prevMsg.role === m.role
+                            && prevMsg.sender === m.sender;
+                        const nextMsg = messages[idx + 1];
+                        const isSameAsNext = nextMsg
+                            && nextMsg.role === m.role
+                            && nextMsg.sender === m.sender;
+
+                        // ??$$$ — Avatar initials (first 2 chars of username)
+                        const initials = isAI ? null : (m.sender || "?").slice(0, 2).toUpperCase();
+                        const timeStr = m.ts
+                            ? new Date(m.ts).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })
+                            : "";
+
+                        return (
+                            <div
+                                key={idx}
+                                className={`flex items-end gap-2 ${
+                                    isMe ? "flex-row-reverse" : "flex-row"
+                                } ${isSameAsPrev ? "mt-0.5" : "mt-4"}`}
+                            >
+                                {/* ??$$$ — Avatar (left for others, hidden for me) */}
+                                {!isMe && (
+                                    <div className={`w-7 h-7 rounded-full flex items-center justify-center shrink-0 mb-1 ${
+                                        isAI
+                                            ? "bg-emerald-700 text-emerald-200"
+                                            : "bg-purple-700 text-purple-200"
+                                    } ${isSameAsPrev ? "opacity-0 pointer-events-none" : ""}`}
+                                        style={{ fontSize: "10px", fontWeight: 700 }}
+                                    >
+                                        {isAI ? <Bot size={13} /> : initials}
+                                    </div>
+                                )}
+
+                                {/* ??$$$ — Bubble + name + time */}
+                                <div className={`flex flex-col max-w-[78%] ${
+                                    isMe ? "items-end" : "items-start"
+                                }`}>
+                                    {/* Sender name — only on first in a group */}
+                                    {!isSameAsPrev && (
+                                        <span className={`text-[10px] font-semibold mb-0.5 ${
+                                            isMe ? "text-blue-400 mr-1" :
+                                            isAI ? "text-emerald-400 ml-1" :
+                                            "text-purple-400 ml-1"
+                                        }`}>
+                                            {isAI ? "AI Co-Founder" : isMe ? "You" : m.sender}
+                                        </span>
+                                    )}
+
+                                    {/* Bubble */}
+                                    <div className={`text-sm whitespace-pre-wrap leading-relaxed px-3.5 py-2.5 break-words ${
+                                        isMe
+                                            ? "bg-blue-600 text-white rounded-2xl rounded-br-none"
+                                            : isAI
+                                            ? "bg-[#1C1C1C] border border-white/8 text-gray-200 rounded-2xl rounded-bl-none"
+                                            : "bg-purple-800/60 border border-purple-500/20 text-white rounded-2xl rounded-bl-none"
+                                    }`}>
+                                        {/* ??$$$ — Render image if present */}
+                                        {m.imageUrl && (
+                                            <img
+                                                src={m.imageUrl}
+                                                alt="shared"
+                                                className="max-w-[220px] max-h-[200px] rounded-xl mb-1 object-cover cursor-pointer"
+                                                onClick={() => window.open(m.imageUrl, "_blank")}
+                                            />
+                                        )}
+                                        {/* ??$$$ — Highlight @mentions in message text */}
+                                        {m.content && m.content.split(/(@\w+)/g).map((part, i) =>
+                                            /^@\w+$/.test(part)
+                                                ? <span key={i} className={`font-bold ${
+                                                    part.toLowerCase() === "@ai" || part.toLowerCase() === "@bot"
+                                                        ? "text-emerald-300"
+                                                        : "text-yellow-300"
+                                                }`}>{part}</span>
+                                                : part
+                                        )}
+                                    </div>
+
+                                    {/* Timestamp — only on last in a group */}
+                                    {!isSameAsNext && timeStr && (
+                                        <span className={`text-[9px] text-gray-700 mt-0.5 ${
+                                            isMe ? "mr-1" : "ml-1"
+                                        }`}>
+                                            {timeStr}
+                                        </span>
+                                    )}
+                                </div>
+                            </div>
+                        );
+                    })}
+
+                    {/* ??$$$ — Teammate typing indicator */}
+                    {someoneTyping && (
+                        <div className="flex items-end gap-2 mt-4">
+                            <div className="w-7 h-7 rounded-full bg-purple-700 flex items-center justify-center shrink-0" style={{ fontSize: "10px", fontWeight: 700 }}>
+                                {someoneTyping.slice(0, 2).toUpperCase()}
+                            </div>
+                            <div className="bg-purple-800/40 border border-purple-500/20 px-4 py-2.5 rounded-2xl rounded-bl-none">
+                                <div className="flex gap-1 items-center">
+                                    <span className="w-1.5 h-1.5 rounded-full bg-purple-400 animate-bounce" style={{ animationDelay: "0ms" }} />
+                                    <span className="w-1.5 h-1.5 rounded-full bg-purple-400 animate-bounce" style={{ animationDelay: "150ms" }} />
+                                    <span className="w-1.5 h-1.5 rounded-full bg-purple-400 animate-bounce" style={{ animationDelay: "300ms" }} />
+                                </div>
                             </div>
                         </div>
-                    ))}
+                    )}
 
                     {loading && (
                         <div className="flex items-start">
@@ -1025,31 +1393,89 @@ const IdeationPage = () => {
                     ))}
                 </div>
 
-                {/* Input Box */}
+                {/* Input Box + Image Upload */}
                 <div className="p-4 border-t border-white/10 bg-[#151515] shrink-0">
+
+                    {/* ??$$$ — @mention autocomplete dropdown */}
+                    {mentionDropdown.length > 0 && (
+                        <div className="mb-2 flex flex-wrap gap-1.5">
+                            {mentionDropdown.map(name => (
+                                <button
+                                    key={name}
+                                    onMouseDown={(e) => { e.preventDefault(); insertMention(name); }}
+                                    className={`text-[11px] px-2.5 py-1 rounded-full font-bold border transition ${
+                                        name === "ai"
+                                            ? "bg-emerald-500/20 border-emerald-500/30 text-emerald-300 hover:bg-emerald-500/30"
+                                            : "bg-purple-500/20 border-purple-500/30 text-purple-300 hover:bg-purple-500/30"
+                                    }`}
+                                >
+                                    @{name}
+                                </button>
+                            ))}
+                        </div>
+                    )}
+
+                    {/* ??$$$ — @ai hint when no AI trigger (Phase 1 conversations) */}
+                    {messages.length > 1 && !loading && (
+                        <div className="text-[9px] text-gray-700 mb-1.5">
+                            Tip: type <span className="text-emerald-700 font-bold">@ai</span> to call the AI • <span className="text-yellow-700 font-bold">@teammate</span> to DM without AI responding
+                        </div>
+                    )}
+
                     <div className="flex gap-2 items-end">
+                        {/* ??$$$ — Image upload button */}
+                        <button
+                            onClick={() => imageInputRef.current?.click()}
+                            disabled={imageUploadLoading}
+                            title="Send image"
+                            className="p-2.5 bg-[#0C0C0C] border border-white/10 hover:border-purple-500/40 hover:bg-purple-500/10 rounded-xl text-gray-500 hover:text-purple-300 transition shrink-0 disabled:opacity-40"
+                        >
+                            {imageUploadLoading
+                                ? <Loader size={15} className="animate-spin" />
+                                : <span style={{ fontSize: 15 }}>📎</span>}
+                        </button>
+                        <input
+                            type="file"
+                            accept="image/*"
+                            ref={imageInputRef}
+                            className="hidden"
+                            onChange={e => handleImageUpload(e.target.files?.[0])}
+                        />
+
                         <textarea
+                            ref={inputRef}
                             rows={1}
                             className="flex-1 bg-[#0C0C0C] border border-white/10 rounded-xl px-3 py-2.5 text-sm outline-none focus:border-purple-500 resize-none leading-relaxed placeholder-gray-600 transition"
-                            placeholder="Describe your idea… (Enter to send)"
+                            placeholder="Message the team… type @ai to call AI, @name to DM"
                             value={input}
                             onChange={e => {
-                                setInput(e.target.value);
+                                const val = e.target.value;
+                                setInput(val);
                                 e.target.style.height = "auto";
                                 e.target.style.height = Math.min(e.target.scrollHeight, 120) + "px";
+                                // Typing indicator
+                                ideationSocket.emit("ideation_typing", { repoSlug, username: myUsername, isTyping: !!val.trim() });
+                                // ??$$$ — @mention detection
+                                const atMatch = val.match(/@(\w*)$/);
+                                if (atMatch) {
+                                    const q = atMatch[1].toLowerCase();
+                                    const options = ["ai", ...teammates.map(t => t.username).filter(n => n !== myUsername)];
+                                    setMentionDropdown(options.filter(o => o.startsWith(q)));
+                                } else {
+                                    setMentionDropdown([]);
+                                }
                             }}
                             onKeyDown={e => {
                                 if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); handleSend(); }
                             }}
-                            disabled={loading}
                             style={{ minHeight: 40 }}
                         />
                         <button
                             onClick={() => handleSend()}
-                            disabled={loading || !input.trim()}
+                            disabled={loading || (!input.trim() && !imageUploadLoading)}
                             className="p-2.5 bg-emerald-600 hover:bg-emerald-500 rounded-xl disabled:opacity-40 transition shrink-0"
                         >
-                            <Send size={15} />
+                            {loading ? <Loader size={15} className="animate-spin" /> : <Send size={15} />}
                         </button>
                     </div>
                 </div>

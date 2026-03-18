@@ -8,7 +8,8 @@ import {
     getIdeationSession,
     clearIdeationSession,
     draftFileCode,
-    generateUiPreview
+    generateUiPreview,
+    detectConflicts
 } from "../controllers/hackathon.controller.js";
 import { protectRoute } from "../middleware/protectRoute.js";
 
@@ -25,6 +26,9 @@ router.post("/generate-ui-preview", protectRoute, generateUiPreview);
 router.post("/session", protectRoute, saveIdeationSession);
 router.get("/session/:repoName", protectRoute, getIdeationSession);
 router.delete("/session/:repoName", protectRoute, clearIdeationSession);
+
+// ??$$$ — Conflict detection for collaborative ideation
+router.post("/detect-conflicts", protectRoute, detectConflicts);
 
 export default router;
 

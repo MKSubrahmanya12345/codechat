@@ -43,6 +43,10 @@ const ideationSchema = new mongoose.Schema({
         type: String,
         default: "",
     },
+    tasks: {
+        type: Array,
+        default: [], // { id, title, assignedTo, status, branch, createdAt }
+    },
     updatedAt: {
         type: Date,
         default: Date.now,

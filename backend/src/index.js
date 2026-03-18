@@ -16,6 +16,7 @@ import repoRoutes from "./routes/repo.route.js";
 import inviteRoutes from "./routes/invite.route.js";
 import userRoutes from "./routes/user.route.js";
 import hackathonRoutes from "./routes/hackathon.route.js";
+import bridgeRoutes from "./routes/bridge.route.js";
 
 dotenv.config();
 
@@ -55,6 +56,7 @@ app.use("/api/repos", repoRoutes);
 app.use("/api/invites", inviteRoutes);
 app.use("/api/user", userRoutes);
 app.use("/api/hackathon", hackathonRoutes);
+app.use("/api/bridge", bridgeRoutes);
 
 app.post("/api/upload", upload.single("file"), (req, res) => {
     if (!req.file) return res.status(400).json({ error: "No file uploaded" });
@@ -187,6 +189,50 @@ io.on("connection", (socket) => {
         } catch (e) { 
             console.error("Action Error:", e.message); 
         }
+    });
+
+    // ??$$$ — IDEATION: Collaborative AI session room management
+    socket.on("ideation_join", ({ repoSlug, username }) => {
+        if (!repoSlug || !username) return;
+        const room = `ideation_${repoSlug}`;
+        socket.join(room);
+
+        // Track who is in this ideation room
+        if (!presenceByRepo.has(room)) presenceByRepo.set(room, new Map());
+        const roomMap = presenceByRepo.get(room);
+        const isNewMember = !roomMap.has(username);
+        roomMap.set(username, { status: "online", lastSeen: new Date().toISOString() });
+
+        // Broadcast updated teammate list to everyone in the room
+        const teammates = Array.from(roomMap.entries()).map(([u, m]) => ({ username: u, ...m }));
+        io.to(room).emit("ideation_teammates", teammates);
+        console.log(`[Ideation] ${username} joined room: ${room}`);
+
+        // ??$$$ — Key fix: tell all OTHER existing members to re-broadcast their state
+        //         so this new joiner gets caught up with the full message history
+        if (isNewMember) {
+            socket.to(room).emit("ideation_need_sync", { forUser: username });
+        }
+    });
+
+    // ??$$$ — IDEATION: Broadcast AI response + session update to all teammates
+    socket.on("ideation_sync", ({ repoSlug, session, senderUsername }) => {
+        if (!repoSlug) return;
+        const room = `ideation_${repoSlug}`;
+        // ??$$$ — Broadcast to ALL others in the room (not just sender's tab)
+        socket.to(room).emit("ideation_update", { session, senderUsername });
+    });
+
+    // ??$$$ — IDEATION: Typing indicator for chat
+    socket.on("ideation_typing", ({ repoSlug, username, isTyping }) => {
+        if (!repoSlug || !username) return;
+        socket.to(`ideation_${repoSlug}`).emit("ideation_user_typing", { username, isTyping });
+    });
+
+    // ??$$$ — IDEATION: Broadcast conflict resolution to all teammates
+    socket.on("ideation_conflict_resolved", ({ repoSlug, conflictId }) => {
+        if (!repoSlug) return;
+        io.to(`ideation_${repoSlug}`).emit("ideation_conflict_dismissed", { conflictId });
     });
 
     socket.on("disconnect", () => {

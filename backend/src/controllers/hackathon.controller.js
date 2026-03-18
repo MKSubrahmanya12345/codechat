@@ -45,44 +45,105 @@ const executeWithKeyRotation = async (promptText) => {
 
 export const chatWithAi = async (req, res) => {
     try {
-        const { messages } = req.body;
+        const { messages, isArgument } = req.body;  // ??$$$ — accept isArgument flag
         
         if (!process.env.GEMINI_API_KEY && getValidKeys().length === 0) {
             return res.status(500).json({ error: "GEMINI_API_KEY is missing in .env" });
         }
 
-        const systemInstruction = `You are a visionary Principal Architect and Hackathon CTO.
-        Your job is to help the user refine their hackathon idea step-by-step and produce a live architecture specification.
-        
-        CONVERSATIONAL FLOW:
-        1. **Validate & Elevate:** When the user pitches an idea, respond with 2-3 sentences MAX. Suggest ONE killer feature that makes it win. Ask: "Do you like this direction, or should we twist it?"
-        2. **Lock Tech Stack:** Once the idea is agreed upon, propose a short, concrete MERN/Fullstack tech stack. List it briefly and ask: "Are we good to generate the architecture graph?"
-        3. **Generate Graph:** When the user agrees or says "generate graph", output the ReactFlow JSON graph.
-        
-        CRITICAL: Every single response MUST be a valid JSON object in this EXACT format. No markdown outside the JSON:
-        \`\`\`json
-        {
-          "reply": "Your short chat response here.",
-          "blueprint": {
-            "techStack": ["React + Vite", "Node.js + Express", "MongoDB Atlas", "Socket.io", "Redis"],
-            "folderStructure": "frontend/\\n  src/\\n    pages/\\n    components/\\nbackend/\\n  src/\\n    routes/\\n    controllers/\\n    models/",
-            "hostingInstructions": "Frontend: Vercel. Backend: Railway. DB: MongoDB Atlas free tier. WebSockets: Railway keeps persistent connections.",
-            "codeMePreview": "Build a MERN stack app for real-time logistics fraud detection. Use Socket.io for live driver tracking...",
-            "graph": null
-          }
-        }
-        \`\`\`
-        
-        RULES:
-        - "reply": Short, punchy chat response ONLY. No essays.
-        - "blueprint": Update ALL fields progressively as the conversation develops. Always fill in what you know so far. Leave fields as null or empty array if not yet discussed.
-        - "graph": Set to null UNLESS the user asks to generate the graph. When generating: set to { "nodes": [...], "edges": [...] } with nodes logically positioned (x/y spaced 200px apart). Node format: { "id": "1", "data": { "label": "Driver App", "kind": "client", "tech": "React Native" }, "position": { "x": 0, "y": 0 } }. Edge format: { "id": "e1-2", "source": "1", "target": "2", "label": "GPS ping" }
-        - Return ONLY valid JSON in the code block. No text before or after.`;
-
-        // Format history for the GenAI SDK
-        let promptText = systemInstruction + "\n\n--- User Conversation ---\n";
+        // ??$$$ — Build a team-member context string if senders are tagged
+        const teamMap = {};
         messages.forEach(m => {
-            promptText += `${m.role.toUpperCase()}: ${m.content}\n`;
+            if (m.role === "user" && m.sender) teamMap[m.sender] = true;
+        });
+        const teamNames = Object.keys(teamMap);
+        const teamContext = teamNames.length > 0
+            ? `\nTEAM MEMBERS IN THIS CHAT: ${teamNames.join(", ")}. Each message is tagged [USERNAME]. Use their names when replying. Track who is building what.`
+            : "";
+
+        // ??$$$ — Detect which phase we're in by scanning conversation history
+        const allUserText = messages.filter(m => m.role === "user").map(m => m.content.toLowerCase()).join(" ");
+        const isDoneTriggered = /\b(done|ready|finalize|let'?s plan|start planning|move on|go ahead|proceed|lock it)\b/.test(allUserText);
+
+        // Check if Q&A is complete (all 5 decisions made — look for AI having confirmed them)
+        const allAiText = messages.filter(m => m.role === "ai").map(m => m.content.toLowerCase()).join(" ");
+        const isQAComplete = isDoneTriggered && (
+            allAiText.includes("perfect, let me lock") || 
+            allAiText.includes("blueprint is now locked") ||
+            allAiText.includes("generating your blueprint")
+        );
+
+        // ??$$$ — Roast mode: injected when two teammates are arguing and @ai was called
+        const roastContext = isArgument
+            ? `\n\n🔥 ARGUMENT MODE ACTIVATED: The team is in a HEATED debate right now. Someone called @ai to settle it. You are now the referee. Rules: (1) Mediate with brutal, funny wit. (2) Roast BOTH sides equally — no favorites. (3) Actually identify who's right technically and say it, but wrap it in a roast. (4) Keep it under 5 sentences. Examples of the vibe: "Bro, you're both technically correct and practically useless right now." / "X is fighting for client/server like it's 2015. Y is fighting for frontend/backend while forgetting to build the actual backend. Let me save you both." Be sharp, be funny, BE RIGHT.`
+            : "";
+
+        const systemInstruction = `You are a friendly, sharp AI Co-Founder participating in a hackathon team group chat.
+Your personality: concise, direct, uses team member names, never lectures, asks one question at a time.${teamContext}${roastContext}
+
+════════════════════════════════════════════
+YOU OPERATE IN 3 STRICT PHASES:
+════════════════════════════════════════════
+
+${!isDoneTriggered ? `
+▶ CURRENT PHASE: 1 — DISCUSSION (Active)
+════════════════════════════════════════════
+- You are in a free-flowing GROUP CHAT. Be natural. Discuss, react, ask ONE question at a time.
+- Understand the idea deeply: what problem it solves, who the users are, what the killer feature is.
+- DO NOT ask about tech stack, frameworks, or folder structure yet. That comes later.
+- DO NOT fill in any blueprint fields. techStack = [], everything else = null or "".
+- Keep going until a team member says "done", "ready", "finalize", "let's plan", or similar.
+- You are HOLDING all the info to use later. Acknowledge ideas, ask targeted follow-ups.
+` : isQAComplete ? `
+▶ CURRENT PHASE: 3 — BLUEPRINT GENERATION (Active)
+════════════════════════════════════════════
+- All decisions have been made via Q&A. Now generate the complete blueprint.
+- Fill ALL blueprint fields (techStack, folderStructure, hostingInstructions, codeMePreview) based on confirmed answers.
+- Set graph to null unless user explicitly asks for the architecture graph.
+- Reply confirming the blueprint is locked and everything is visible in the left panel.
+` : `
+▶ CURRENT PHASE: 2 — STRUCTURED Q&A (Active — triggered by user saying done/ready)
+════════════════════════════════════════════
+- Ask ONE decision-making question at a time. Wait for the answer before asking the next.
+- Go in this exact order (check which have already been answered in conversation):
+  Q1: "What's your tech stack? (MERN, T3, Next.js + Prisma, Django + React, FastAPI, etc.)"
+  Q2: "Folder structure: 'frontend/backend', 'client/server', or monorepo (packages/apps)?"
+  Q3: "Hosting: Vercel + Railway? AWS EC2? fly.io? Render? Or something else?"
+  Q4: "Auth: JWT, sessions, OAuth (Google/GitHub), Clerk, or NextAuth?"
+  Q5: "What's the single most important MVP feature — the one thing that must work at demo time?"
+- After ALL 5 are answered, say exactly: "Perfect, let me lock in the blueprint now." and fill ALL blueprint fields.
+- DO NOT fill blueprint fields until all 5 questions are answered.
+`}
+
+════════════════════════════════════════════
+    "blueprint": {
+      "techStack": [],
+      "folderStructure": null,
+      "hostingInstructions": null,
+      "codeMePreview": null,
+      "graph": null
+    },
+    "tasks": [
+      { "id": "t1", "title": "Implement Login Page", "assignedTo": "UserA", "status": "pending", "branch": "feature/login-page-UserA" }
+    ]
+  }
+}
+```
+
+FINAL RULES:
+- "reply": Max 4 sentences. Conversational. Address people by name. React to what they say.
+- "tasks": This is for the LIVE TASK BOARD. Every time someone says "I'll do X" or "I'm handling Y", extract it here. 
+- "tasks" format: { "id": "uniqueSlug", "title": "Short Task Name", "assignedTo": "Username", "status": "pending", "branch": "feature/task-name-username" }.
+- If a task is already in history, don't duplicate it. Only return NEW or UPDATED tasks.
+- Return ONLY the JSON code block. No text before or after.`;
+
+        // ??$$$ — Format history with sender name for full team awareness
+        let promptText = systemInstruction + "\n\n--- GROUP CHAT HISTORY ---\n";
+        messages.forEach(m => {
+            const label = m.role === "user"
+                ? `[${m.sender || "Teammate"}]`
+                : "[AI Co-Founder]";
+            promptText += `${label}: ${m.content}\n`;
         });
 
         const rawReply = await executeWithKeyRotation(promptText);
@@ -94,12 +155,10 @@ export const chatWithAi = async (req, res) => {
                 const parsed = JSON.parse(jsonMatch[1]);
                 return res.status(200).json(parsed);
             } catch (parseErr) {
-                // If JSON parse fails, fall back to raw text
                 console.error("JSON parse failed, falling back:", parseErr.message);
             }
         }
 
-        // Fallback: wrap raw text in expected format
         res.status(200).json({ reply: rawReply, blueprint: null });
 
     } catch (e) {
@@ -424,7 +483,7 @@ export const generateUiPreview = async (req, res) => {
 // ??$$$ — Save/Update Ideation Session in MongoDB
 export const saveIdeationSession = async (req, res) => {
     try {
-        const { repoName, messages, blueprint, nodes, edges, teamSize, hackHours, fileDrafts, uiPreview } = req.body;
+        const { repoName, messages, blueprint, nodes, edges, teamSize, hackHours, fileDrafts, uiPreview, tasks } = req.body;
         const userId = req.user._id;
 
         const session = await Ideation.findOneAndUpdate(
@@ -438,6 +497,7 @@ export const saveIdeationSession = async (req, res) => {
                 hackHours, 
                 fileDrafts,
                 uiPreview,
+                tasks,
                 updatedAt: Date.now() 
             },
             { upsert: true, new: true }
@@ -479,5 +539,110 @@ export const clearIdeationSession = async (req, res) => {
     } catch (e) {
         console.error("Clear Session Error:", e);
         res.status(500).json({ error: "Failed to clear session" });
+    }
+};
+
+// ??$$$ — Conflict Detector: scans team conversation + blueprint for contradictions
+export const detectConflicts = async (req, res) => {
+    try {
+        const { messages = [], blueprint = {} } = req.body;
+
+        // Build a condensed view of the conversation for the AI to analyze
+        const convoSummary = messages
+            .filter(m => m.role === "user")
+            .map(m => `[${m.sender || "user"}]: ${m.content}`)
+            .join("\n");
+
+        const blueprintStr = JSON.stringify(blueprint, null, 2);
+
+        const prompt = `You are a senior software architect reviewing a team's hackathon planning conversation for technical conflicts.
+
+CONVERSATION:
+${convoSummary}
+
+CURRENT BLUEPRINT:
+${blueprintStr}
+
+Your job: Identify REAL conflicts — things that if left unresolved will cause the project to fail or confuse team members.
+
+Look for:
+1. Folder/directory naming conflicts (e.g., one person says "frontend/backend", another says "client/server")
+2. Conflicting database choices (MongoDB vs PostgreSQL for same data)
+3. Conflicting frontend frameworks (React vs Vue for same UI)
+4. Port conflicts (two services claiming port 3000)
+5. Auth method conflicts (JWT vs Sessions)
+6. Contradictory feature descriptions or tech choices between teammates
+
+IMPORTANT: Only report conflicts that are genuinely contradictory. Do not invent conflicts that don't exist.
+
+Return ONLY valid JSON (no markdown wrapper):
+{
+  "conflicts": [
+    {
+      "id": "c1",
+      "type": "folder_naming",
+      "severity": "high",
+      "title": "Folder naming conflict",
+      "description": "One teammate uses 'frontend/backend', another uses 'client/server'.",
+      "fix": "Standardize to 'frontend/backend' everywhere in the blueprint.",
+      "fixPrompt": "Please update the blueprint so all folder references use 'frontend/backend' naming consistently."
+    }
+  ]
+}
+
+If no conflicts found, return: { "conflicts": [] }`;
+
+        const rawReply = await executeWithKeyRotation(prompt);
+
+        // Try to parse as raw JSON (no code block wrapper this time)
+        try {
+            let jsonStr = rawReply.trim();
+            // strip any accidental code block
+            const match = jsonStr.match(/```(?:json)?\n?([\s\S]*?)\n?```/);
+            if (match) jsonStr = match[1];
+            const parsed = JSON.parse(jsonStr);
+            return res.status(200).json(parsed);
+        } catch {
+            // If parse fails, return empty (don't crash)
+            console.error("Conflict parse failed:", rawReply.slice(0, 200));
+            return res.status(200).json({ conflicts: [] });
+        }
+
+    } catch (e) {
+        console.error("Conflict Detection Error:", e);
+        res.status(500).json({ error: "Conflict detection failed: " + e.message });
+    }
+};
+
+// ??$$$ — NEW: Task Branch creation on GitHub
+export const createRepoBranch = async (req, res) => {
+    try {
+        const { repoOwner, repoName, branchName, fromBranch = "main" } = req.body;
+        const user = await User.findById(req.user._id);
+        if (!user || !user.githubToken) return res.status(401).json({ error: "No GitHub token" });
+
+        const headers = { 
+            Authorization: `Bearer ${user.githubToken}`,
+            Accept: "application/vnd.github+json"
+        };
+
+        // 1. Get the SHA of the base branch (usually main)
+        const baseRes = await axios.get(`https://api.github.com/repos/${repoOwner}/${repoName}/git/ref/heads/${fromBranch}`, { headers });
+        const baseSha = baseRes.data.object.sha;
+
+        // 2. Create the new branch
+        await axios.post(`https://api.github.com/repos/${repoOwner}/${repoName}/git/refs`, {
+            ref: `refs/heads/${branchName}`,
+            sha: baseSha
+        }, { headers });
+
+        res.status(200).json({ success: true, branch: branchName });
+    } catch (e) {
+        // If branch already exists, GitHub returns 422
+        if (e.response?.status === 422) {
+            return res.status(200).json({ success: true, alreadyExists: true });
+        }
+        console.error("Branch Creation Error:", e?.response?.data || e.message);
+        res.status(500).json({ error: "Failed to create branch: " + (e.response?.data?.message || e.message) });
     }
 };
