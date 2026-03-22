@@ -1,0 +1,16 @@
+{
+  "name": "codechat-desktop",
+  "version": "0.0.1",
+  "scripts": {
+    "tauri": "tauri",
+    "dev": "npm run dev --prefix frontend",
+    "build": "npm run build --prefix frontend"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "^2.1.0"
+  },
+  "dependencies": {
+    "@monaco-editor/react": "^4.7.0",
+    "react-resizable-panels": "^4.7.4"
+  }
+}

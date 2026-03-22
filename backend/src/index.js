@@ -17,6 +17,7 @@ import inviteRoutes from "./routes/invite.route.js";
 import userRoutes from "./routes/user.route.js";
 import hackathonRoutes from "./routes/hackathon.route.js";
 import bridgeRoutes from "./routes/bridge.route.js";
+import pipelineRoutes from "./routes/pipeline.route.js";
 
 dotenv.config();
 
@@ -57,6 +58,7 @@ app.use("/api/invites", inviteRoutes);
 app.use("/api/user", userRoutes);
 app.use("/api/hackathon", hackathonRoutes);
 app.use("/api/bridge", bridgeRoutes);
+app.use("/api/pipeline", pipelineRoutes);
 
 app.post("/api/upload", upload.single("file"), (req, res) => {
     if (!req.file) return res.status(400).json({ error: "No file uploaded" });

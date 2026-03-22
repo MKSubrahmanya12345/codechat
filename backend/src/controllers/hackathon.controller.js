@@ -128,7 +128,7 @@ ${!isDoneTriggered ? `
     ]
   }
 }
-```
+\`\`\`
 
 FINAL RULES:
 - "reply": Max 4 sentences. Conversational. Address people by name. React to what they say.

@@ -8,6 +8,7 @@ import ArchitecturePage from "./pages/ArchitecturePage";
 import DataFlowPage from "./pages/DataFlowPage";
 import InviteAcceptPage from "./pages/InviteAcceptPage";
 import IdeationPage from "./pages/IdeationPage";
+import PipelinePage from "./pages/PipelinePage";
 import axios from "axios";
 
 function App() {
@@ -54,6 +55,7 @@ function App() {
             <Route path="/architecture" element={authUser ? <ArchitecturePage /> : <Navigate to="/" />} />
             <Route path="/data-flow" element={authUser ? <DataFlowPage /> : <Navigate to="/" />} />
             <Route path="/ideation" element={authUser ? <IdeationPage /> : <Navigate to="/" />} />
+            <Route path="/pipeline" element={authUser ? <PipelinePage /> : <Navigate to="/" />} />
             <Route path="/invite/:token" element={<InviteAcceptPage />} />
         </Routes>
     );

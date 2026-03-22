@@ -11,6 +11,7 @@ import ReactMarkdown from 'react-markdown';
 import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter';
 import { vscDarkPlus } from 'react-syntax-highlighter/dist/esm/styles/prism';
 import { Link } from "react-router-dom"; // Import Link
+import IDELayout from "../components/IDELayout"; // ??$$$ — VS Code Style IDE
 
 const socket = io("http://localhost:5000");
 const DEFAULT_REPO_BASE_PATH = "C:\\Users\\User\\Repo";
@@ -28,6 +29,7 @@ const getRepoNameSafe = (repo) => {
 
 // ================= 1. FILE EXPLORER COMPONENT =================
 // ================= 1. FILE EXPLORER COMPONENT =================
+/* 
 const FileExplorer = ({ repo, onPullRepo, onOpenFile }) => {
     const [files, setFiles] = useState([]);
     const [currentPath, setCurrentPath] = useState("");
@@ -150,7 +152,6 @@ const FileExplorer = ({ repo, onPullRepo, onOpenFile }) => {
                         </span>
                         
                         <div className="flex items-center gap-2">
-                            {/* 👇 FIXED BUTTON: Uses pre-calculated safe URL */}
                             {isGraphSupported(viewingFile) ? (
                                 <Link 
                                     to={vizUrl}
@@ -190,6 +191,7 @@ const FileExplorer = ({ repo, onPullRepo, onOpenFile }) => {
         </div>
     );
 };
+*/
 
 // ================= 2. CHAT COMPONENT =================
 const ChatComponent = ({ repo }) => {
@@ -495,7 +497,7 @@ const ChatComponent = ({ repo }) => {
 };
 
 // ================= 3. REPO TABS COMPONENT =================
-const RepoTabs = ({ repo, setShowInviteModal, presenceRoster, onPullRepo, onOpenFile }) => {
+const RepoTabs = ({ repo, setShowInviteModal, presenceRoster, onPullRepo, onOpenFile, user, socket, inviteLink }) => {
     const [activeTab, setActiveTab] = useState("MAIN");
 
     const formatLastSeen = (iso) => {
@@ -505,26 +507,42 @@ const RepoTabs = ({ repo, setShowInviteModal, presenceRoster, onPullRepo, onOpen
 
     return (
         <>
-            <div className="flex px-4 gap-6 bg-[#151515] border-b border-white/5">
+            <div className="flex px-4 gap-8 bg-[#252526] border-b border-white/5">
                 {["MAIN", "GROUPS", "FILES"].map(tab => (
-                    <button key={tab} onClick={() => setActiveTab(tab)} className={`text-xs font-bold py-3 border-b-2 transition-colors ${activeTab === tab ? "border-emerald-500 text-emerald-400" : "border-transparent text-gray-500"}`}>{tab}</button>
+                    <button 
+                        key={tab} 
+                        onClick={() => setActiveTab(tab)} 
+                        className={`text-[11px] font-semibold py-2.5 transition-all relative ${activeTab === tab ? "text-white" : "text-gray-500 hover:text-gray-300"}`}
+                    >
+                        {tab}
+                        {activeTab === tab && <div className="absolute bottom-0 left-0 right-0 h-[2px] bg-[#007acc]" />}
+                    </button>
                 ))}
             </div>
             <div className="flex-1 overflow-hidden relative">
                 {activeTab === "MAIN" && <ChatComponent repo={repo} />}
-                {activeTab === "FILES" && <FileExplorer repo={repo} onPullRepo={onPullRepo} onOpenFile={onOpenFile} />}
+                {activeTab === "FILES" && (
+                    <IDELayout 
+                        repo={repo} 
+                        onPullRepo={onPullRepo} 
+                        user={user} 
+                        socket={socket} 
+                        inviteLink={inviteLink}
+                        setShowInviteModal={setShowInviteModal}
+                    />
+                )}  {/* ??$$$ — VS Code Style IDE */}
                 {activeTab === "GROUPS" && (
                     <div className="p-6">
                         <h3 className="text-xs font-bold text-gray-500 uppercase mb-4">Repository Members</h3>
                         <div className="space-y-3">
-                            <div className="flex items-center justify-between bg-[#1A1A1A] p-3 rounded-lg border border-white/5">
+                            <div className="flex items-center justify-between bg-[#2d2d2d] p-3 rounded border border-white/5">
                                 <div className="flex items-center gap-3">
-                                    <div className="w-8 h-8 rounded-full bg-emerald-900/50 flex items-center justify-center text-emerald-400 font-bold border border-emerald-500/20">
+                                    <div className="w-8 h-8 rounded-full bg-[#007acc] flex items-center justify-center text-white font-bold border border-white/10">
                                         {(getRepoOwnerLogin(repo)?.[0] || "?").toUpperCase()}
                                     </div>
                                     <div>
                                         <p className="font-bold text-sm text-white">{getRepoOwnerLogin(repo) || "unknown"}</p>
-                                        <span className="text-[10px] bg-emerald-500/20 text-emerald-400 px-1.5 py-0.5 rounded">OWNER</span>
+                                        <span className="text-[10px] bg-white/10 text-gray-400 px-1.5 py-0.5 rounded uppercase tracking-wider">Owner</span>
                                     </div>
                                 </div>
                             </div>
@@ -1412,6 +1430,13 @@ const HomePage = () => {
                                 >
                                     <Sparkles size={16} /> AI Brainstorm
                                 </Link>
+                                <Link
+                                    to="/pipeline"
+                                    state={{ newRepo }}
+                                    className="flex-[1.5] py-2 bg-indigo-600 hover:bg-indigo-500 rounded-lg text-sm font-bold flex flex-row items-center justify-center gap-2"
+                                >
+                                    <Sparkles size={16} /> AI Pipeline
+                                </Link>
                                 <button
                                     onClick={() => { setShowCreateRepoModal(false); setCreateRepoError(""); }}
                                     className="flex-1 py-2 bg-gray-800 rounded-lg text-sm"
@@ -1458,41 +1483,27 @@ const HomePage = () => {
                                         <h2 className="font-bold text-lg">{selectedRepo.name}</h2>
                                     </div>
                             <div className="flex gap-2">
-                                <button onClick={handlePullRepo} disabled={gitLoading} className="flex items-center gap-2 text-xs bg-emerald-500/10 text-emerald-400 hover:bg-emerald-500/20 px-3 py-1.5 rounded-full border border-emerald-500/20">
-                                    <FolderSync size={12} /> {gitLoading ? "Working..." : "Pull"}
+                                <button onClick={handlePullRepo} disabled={gitLoading} className="flex items-center gap-2 text-xs bg-white/5 hover:bg-white/10 px-3 py-1.5 rounded border border-white/5 transition-colors">
+                                    <FolderSync size={14} /> {gitLoading ? "Working..." : "Pull"}
                                 </button>
                                 <button
                                     onClick={() => { setCommitMessage(""); setShowCommitModal(true); }}
                                     disabled={gitLoading}
-                                    className="flex items-center gap-2 text-xs bg-blue-500/10 text-blue-400 hover:bg-blue-500/20 px-3 py-1.5 rounded-full border border-blue-500/20"
+                                    className="flex items-center gap-2 text-xs bg-white/5 hover:bg-white/10 px-3 py-1.5 rounded border border-white/5 transition-colors"
                                 >
-                                    <Upload size={12} /> Push
+                                    <Upload size={14} /> Push
                                 </button>
-                                {/* 👇 FIX: Pass owner and repo params */}
                                 <Link 
                                     to={`/architecture?owner=${encodeURIComponent(getRepoOwnerLogin(selectedRepo) || "")}&repo=${encodeURIComponent(getRepoNameSafe(selectedRepo) || "")}`}
-                                    className="flex items-center gap-2 text-xs bg-purple-500/10 text-purple-400 hover:bg-purple-500/20 px-3 py-1.5 rounded-full border border-purple-500/20"
+                                    className="flex items-center gap-2 text-xs bg-white/5 hover:bg-white/10 px-3 py-1.5 rounded border border-white/5 transition-colors"
                                 >
-                                    <Network size={12} /> Visualize
-                                </Link>
-                                <Link
-                                    to={`/data-flow?owner=${encodeURIComponent(getRepoOwnerLogin(selectedRepo) || "")}&repo=${encodeURIComponent(getRepoNameSafe(selectedRepo) || "")}`}
-                                    className="flex items-center gap-2 text-xs bg-cyan-500/10 text-cyan-300 hover:bg-cyan-500/20 px-3 py-1.5 rounded-full border border-cyan-500/20"
-                                >
-                                    <Network size={12} /> Vizualize data flow
-                                </Link>
-                                <Link
-                                    to="/ideation"
-                                    state={{ newRepo: selectedRepo }}
-                                    className="flex items-center gap-2 text-xs bg-purple-500/10 text-purple-400 hover:bg-purple-500/20 px-3 py-1.5 rounded-full border border-purple-500/20"
-                                >
-                                    <Sparkles size={12} /> AI Brainstorm
+                                    <Network size={14} /> Visualize
                                 </Link>
                                 <button
                                     onClick={() => { setInviteUsername(""); setInviteResults([]); setInviteLink(""); setShowInviteModal(true); }}
-                                    className="flex items-center gap-2 text-xs bg-white/5 hover:bg-white/10 px-3 py-1.5 rounded-full border border-white/5"
+                                    className="flex items-center gap-2 text-xs bg-[#007acc] hover:bg-[#0062a3] px-3 py-1.5 rounded font-bold transition-colors"
                                 >
-                                    <Plus size={12} /> Invite
+                                    <Plus size={14} /> Invite
                                 </button>
                             </div>
                         </div>
@@ -1578,7 +1589,16 @@ const HomePage = () => {
                             </div>
                         )}
                         <div className="flex-1 flex flex-col">
-                            <RepoTabs repo={selectedRepo} setShowInviteModal={setShowInviteModal} presenceRoster={presenceRoster} onPullRepo={handlePullRepo} onOpenFile={handleOpenFile} />
+                            <RepoTabs 
+                                repo={selectedRepo} 
+                                setShowInviteModal={setShowInviteModal} 
+                                presenceRoster={presenceRoster} 
+                                onPullRepo={() => handlePullRepo(selectedRepo)} 
+                                onOpenFile={handleOpenFile} 
+                                user={authUser}
+                                socket={socket}
+                                inviteLink={inviteLink}
+                            />
                         </div>
                     </div>
                 ) : (
